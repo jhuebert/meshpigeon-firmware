@@ -14,7 +14,11 @@
 #include "meshpigeon/packet_store.h"
 #include "meshpigeon/settings.h"
 #include "meshpigeon/uptime_clock.h"
+#if defined(MESHPGEON_RADIO_LR1110)
+#include "radio_lr1110.h"
+#else
 #include "radio_sx1262.h"
+#endif
 #include "transports.h"
 
 #if defined(MESHPGEON_ESP32)
@@ -32,6 +36,8 @@ static const char* const kBoardName =
     "HELTEC V3";
 #elif defined(MESHPGEON_BOARD_T114)
     "T114";
+#elif defined(MESHPGEON_BOARD_T1000E)
+    "T1000-E";
 #else
     "UNKNOWN";
 #endif
@@ -50,7 +56,20 @@ static const uint32_t kStoreCapacity = 2000;
 class BoardHooks : public IBoardHooks {
  public:
   uint16_t battery_mv() override {
-#if defined(MESHPGEON_PIN_VBAT_ADC) && defined(MESHPGEON_VBAT_DIVIDER)
+#if defined(MESHPGEON_BOARD_T1000E)
+    // MeshCore T1000eBoard::getBattMilliVolts: sense rail on for the read,
+    // 3.0 V internal reference at 12 bits, ADC_MULTIPLIER 2.0.
+    digitalWrite(MESHPGEON_PIN_3V3_EN, HIGH);
+    analogReference(AR_INTERNAL_3_0);
+    analogReadResolution(12);
+    delay(10);
+    float volts = (analogRead(MESHPGEON_PIN_VBAT_ADC) * MESHPGEON_ADC_MULTIPLIER *
+                   3.0f) / 4096.0f;
+    digitalWrite(MESHPGEON_PIN_3V3_EN, LOW);
+    analogReference(AR_DEFAULT);  // put back to default
+    analogReadResolution(10);
+    return (uint16_t)(volts * 1000);
+#elif defined(MESHPGEON_PIN_VBAT_ADC) && defined(MESHPGEON_VBAT_DIVIDER)
     analogReadResolution(10);
     uint32_t raw = analogRead(MESHPGEON_PIN_VBAT_ADC);
     float mv = (raw / 1023.0f) * 3600.0f * MESHPGEON_VBAT_DIVIDER;
@@ -161,7 +180,11 @@ class BoardSettingsStore : public SettingsStore {
 static PacketStore* g_store;
 static BoardSettingsStore* g_settings_store;
 static BoardHooks g_hooks;
+#if defined(MESHPGEON_RADIO_LR1110)
+static Lr1110Radio* g_radio;
+#else
 static Sx1262Radio* g_radio;
+#endif
 static CommandProcessor* g_processor;
 static UsbCdcSink g_usb;
 
@@ -191,12 +214,27 @@ static void radio_loop() {
 void setup() {
   Serial.begin(115200);
 
+#if defined(MESHPGEON_NRF52) && defined(MESHPGEON_BOARD_T1000E)
+  // DC/DC converter on (MeshCore T1000eBoard power profile).
+  uint8_t sd_enabled = 0;
+  sd_softdevice_is_enabled(&sd_enabled);
+  if (sd_enabled) {
+    sd_power_dcdc_mode_set(1);
+  } else {
+    NRF_POWER->DCDCEN = 1;
+  }
+#endif
+
   g_store = new PacketStore(kStoreCapacity);
   g_settings_store = new BoardSettingsStore();
   g_uptime.set_boot_count(g_settings_store->load_boot_count() + 1);
   g_settings_store->save_boot_count(g_uptime.boot_count());
 
+#if defined(MESHPGEON_RADIO_LR1110)
+  g_radio = new Lr1110Radio();
+#else
   g_radio = new Sx1262Radio();
+#endif
   g_processor = new CommandProcessor(*g_store, g_uptime, *g_settings_store,
                                      *g_radio, kBoardName, kFwVersion);
   g_processor->set_hooks(&g_hooks);

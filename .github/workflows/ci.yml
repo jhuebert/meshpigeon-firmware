@@ -31,7 +31,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        env: [xiao_wio, heltec_v3, t114]
+        env: [xiao_wio, heltec_v3, t114, t1000e]
     steps:
       - uses: actions/checkout@v4
       - uses: actions/cache@v4

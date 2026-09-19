@@ -1,5 +1,5 @@
-#ifndef MESHPGEON_RADIO_SX1262_H
-#define MESHPGEON_RADIO_SX1262_H
+#ifndef MESHPGEON_RADIO_LR1110_H
+#define MESHPGEON_RADIO_LR1110_H
 
 #include <RadioLib.h>
 #include <SPI.h>
@@ -9,13 +9,13 @@
 namespace meshpigeon {
 
 /**
- * SX1262 (RadioLib) implementation of ILoRaRadio. TX starts asynchronously
- * and completes via tx_done() polling from the board loop; RX is polled.
- * The firmware reads/writes raw bytes only — no protocol.
+ * LR1110 (RadioLib) implementation of ILoRaRadio — same async-TX / polled-RX
+ * model as Sx1262Radio. Board config mirrors MeshCore's t1000-e variant:
+ * DIO3 TCXO, DIO5-8 RF switch table, boosted RX gain.
  */
-class Sx1262Radio : public ILoRaRadio {
+class Lr1110Radio : public ILoRaRadio {
  public:
-  Sx1262Radio() : radio_(new Module(MESHPGEON_PIN_LORA_NSS, MESHPGEON_PIN_LORA_DIO1,
+  Lr1110Radio() : radio_(new Module(MESHPGEON_PIN_LORA_NSS, MESHPGEON_PIN_LORA_DIO1,
                                     MESHPGEON_PIN_LORA_RST,
                                     MESHPGEON_PIN_LORA_BUSY)) {}
 
@@ -30,19 +30,15 @@ class Sx1262Radio : public ILoRaRadio {
     int state = radio_.begin((float)last_settings_.freq_hz / 1000000.0f,
                              (float)last_settings_.bw_x100khz / 100.0f,
                              last_settings_.sf, last_settings_.cr,
-                             RADIOLIB_SX126X_SYNC_WORD_PRIVATE,
-                             (int8_t)last_settings_.power_dbm, 16, tcxo,
-                             tcxo > 0.0f);
+                             RADIOLIB_LR11X0_LORA_SYNC_WORD_PRIVATE,
+                             (int8_t)last_settings_.power_dbm, 16, tcxo);
     if (state != RADIOLIB_ERR_NONE) return false;
-    // Headroom for +22 dBm TX (MeshCore SX126X_CURRENT_LIMIT=140)
-    state = radio_.setCurrentLimit(140.0f);
-    if (state != RADIOLIB_ERR_NONE) return false;
+#ifdef MESHPGEON_RADIO_RF_SWITCH_TABLE
+    // T1000-E switches the antenna via DIO5-8 (MeshCore rfswitch_table)
+    radio_.setRfSwitchTable(k_rfswitch_dios, k_rfswitch_table);
+#endif
 #ifdef MESHPGEON_RADIO_RX_BOOSTED_GAIN
     radio_.setRxBoostedGainMode(true);
-#endif
-#ifdef MESHPGEON_RADIO_DIO2_RFSWITCH
-    // Some boards (XIAO WIO, Heltec V3) switch the antenna via DIO2
-    radio_.setDio2AsRfSwitch(true);
 #endif
     return apply(last_settings_);
   }
@@ -64,7 +60,7 @@ class Sx1262Radio : public ILoRaRadio {
     if (state != RADIOLIB_ERR_NONE) return false;
     state = radio_.setOutputPower((int8_t)s.power_dbm);
     if (state != RADIOLIB_ERR_NONE) return false;
-    state = radio_.setCRC(true);  // on-air CRC always on
+    state = radio_.setCRC(2);  // on-air CRC always on
     if (state != RADIOLIB_ERR_NONE) return false;
     return start_rx();
   }
@@ -84,7 +80,7 @@ class Sx1262Radio : public ILoRaRadio {
 
   bool tx_done() override {
     if (!tx_started_) return true;
-    if (radio_.getIrqFlags() & RADIOLIB_SX126X_IRQ_TX_DONE) {
+    if (radio_.getIrqFlags() & RADIOLIB_LR11X0_IRQ_TX_DONE) {
       radio_.finishTransmit();  // clears IRQ + returns to standby
       tx_started_ = false;
       start_rx();
@@ -95,17 +91,25 @@ class Sx1262Radio : public ILoRaRadio {
 
   bool receive(uint8_t* raw, uint8_t* len, int8_t* rssi, int8_t* snr) override {
     if (rx_paused_) return false;
-    uint16_t irq = radio_.getIrqFlags();
-    if (!(irq & RADIOLIB_SX126X_IRQ_RX_DONE)) return false;
-    bool crc_ok = !(irq & (RADIOLIB_SX126X_IRQ_CRC_ERR |
-                           RADIOLIB_SX126X_IRQ_HEADER_ERR));
-    int plen = radio_.getPacketLength(true);
+    uint32_t irq = radio_.getIrqFlags();
+    if (!(irq & RADIOLIB_LR11X0_IRQ_RX_DONE)) return false;
+    // Known LR11x0 quirk (MeshCore CustomLR1110): a corrupted header can
+    // desync the RX buffer — return to standby before restarting RX.
+    if ((irq & RADIOLIB_LR11X0_IRQ_HEADER_ERR) &&
+        radio_.getPacketLength(true) == 0) {
+      radio_.standby();
+      start_rx();
+      return false;
+    }
+    bool crc_ok = !(irq & (RADIOLIB_LR11X0_IRQ_CRC_ERR |
+                           RADIOLIB_LR11X0_IRQ_HEADER_ERR));
+    uint8_t plen = radio_.getPacketLength(true);
     uint8_t buf[MESHPGEON_MAX_RAW_PACKET];
     bool got = crc_ok && plen > 0 && plen <= MESHPGEON_MAX_RAW_PACKET &&
                radio_.readData(buf, plen) == RADIOLIB_ERR_NONE;  // clears IRQ
     start_rx();
     if (!got) return false;
-    *len = (uint8_t)plen;
+    *len = plen;
     memcpy(raw, buf, *len);
     *rssi = (int8_t)radio_.getRSSI();
     *snr = (int8_t)radio_.getSNR();
@@ -118,12 +122,36 @@ class Sx1262Radio : public ILoRaRadio {
     return state == RADIOLIB_ERR_NONE;
   }
 
-  SX1262 radio_;
+#ifdef MESHPGEON_RADIO_RF_SWITCH_TABLE
+  static const uint32_t k_rfswitch_dios[Module::RFSWITCH_MAX_PINS];
+  static const Module::RfSwitchMode_t k_rfswitch_table[];
+#endif
+
+  LR1110 radio_;
   RadioSettings last_settings_ = RadioSettings::unset();
   bool tx_started_ = false;
   bool rx_paused_ = false;
 };
 
+#ifdef MESHPGEON_RADIO_RF_SWITCH_TABLE
+// DIO5-8 RF switch table from MeshCore's t1000-e target.cpp
+const uint32_t Lr1110Radio::k_rfswitch_dios[Module::RFSWITCH_MAX_PINS] = {
+    RADIOLIB_LR11X0_DIO5, RADIOLIB_LR11X0_DIO6, RADIOLIB_LR11X0_DIO7,
+    RADIOLIB_LR11X0_DIO8, RADIOLIB_NC,
+};
+const Module::RfSwitchMode_t Lr1110Radio::k_rfswitch_table[] = {
+    // mode                 DIO5  DIO6  DIO7  DIO8
+    {LR11x0::MODE_STBY, {LOW, LOW, LOW, LOW}},
+    {LR11x0::MODE_RX, {HIGH, LOW, LOW, HIGH}},
+    {LR11x0::MODE_TX, {HIGH, HIGH, LOW, HIGH}},
+    {LR11x0::MODE_TX_HP, {LOW, HIGH, LOW, HIGH}},
+    {LR11x0::MODE_TX_HF, {LOW, LOW, LOW, LOW}},
+    {LR11x0::MODE_GNSS, {LOW, LOW, HIGH, LOW}},
+    {LR11x0::MODE_WIFI, {LOW, LOW, LOW, LOW}},
+    END_OF_MODE_TABLE,
+};
+#endif
+
 }  // namespace meshpigeon
 
-#endif  // MESHPGEON_RADIO_SX1262_H
+#endif  // MESHPGEON_RADIO_LR1110_H

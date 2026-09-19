@@ -28,11 +28,12 @@ logic** — all of that lives in the [MeshPigeon app](https://github.com/jhueber
 | Seeed XIAO ESP32-S3 + Wio-SX1262 | ESP32-S3 | SX1262 | USB CDC + BLE |
 | Heltec WiFi LoRa 32 V3 | ESP32-S3 | SX1262 | USB CDC + BLE |
 | Seeed SenseCAP T114 | nRF52840 | SX1262 | USB CDC (BLE lands with first bench bring-up) |
+| Seeed Tracker T1000-E | nRF52840 | LR1110 | USB CDC (BLE lands with first bench bring-up) |
 
 Build a board:
 
 ```sh
-pio run -e xiao_wio        # or heltec_v3, t114
+pio run -e xiao_wio        # or heltec_v3, t114, t1000e
 pio run -e xiao_wio -t upload
 pio run -e xiao_wio -t monitor
 ```
@@ -62,7 +63,8 @@ src/radio_sx1262.h  RadioLib SX1262 port (raw bytes only)
 src/transports.h    USB CDC + BLE (Nordic UART Service) frame sinks
 sim/                desktop simulator (TCP bridge + scriptable RF loss/dup)
 test/               host-side unit tests (Unity, run with -e native)
-boards/             custom board definitions (seeed_t114)
+boards/             custom board definitions (seeed_t114, tracker-t1000-e)
+                    + SoftDevice s140 v7 linker script
 docs/               radio-protocol.md — the versioned command contract
 docs/plans/         founding plan documents
 ```
