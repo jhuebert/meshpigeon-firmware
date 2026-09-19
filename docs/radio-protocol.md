@@ -97,11 +97,12 @@ Requests are `cmd + nonce + status 0x00 + payload`; responses use the same
 0    proto version (1)
 1    fw version major
 2    fw version minor
-3    board name, up to 16 bytes, zero-padded ("XIAO WIO", "HELTEC V3", "T114", "SIM")
+3    board name, up to 16 bytes, zero-padded ("XIAO WIO", "HELTEC V3", "T114", "T1000-E", "SIM")
 19   uptime_ms      u32
 23   boot_count     u32   (increments each boot; see §6)
 27   store count    u32   (packets currently retained)
-31   store capacity u32
+31   store capacity u32   (store byte budget — entries are variable-length,
+                          so packet capacity depends on packet sizes)
 35   store dropped  u32   (packets evicted by overflow)
 39   oldest seq     u32   (0 if store empty)
 43   config epoch   u32   (see §7.1)

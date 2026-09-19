@@ -31,7 +31,7 @@
 
 using namespace meshpigeon;
 
-static const uint32_t kDefaultCapacity = 5000;
+static const uint32_t kDefaultStoreBytes = 65536;
 
 static ManualClock sim_clock(0);
 static UptimeClock uptime(sim_clock);
@@ -108,20 +108,20 @@ static void sim_loop_tick(uint32_t traffic_ms) {
 int main(int argc, char** argv) {
   uint16_t port = 8765;
   uint32_t traffic_ms = 0;
-  uint32_t store_capacity = kDefaultCapacity;
+  uint32_t store_bytes = kDefaultStoreBytes;
   for (int i = 1; i < argc; i++) {
     if (!strcmp(argv[i], "--port") && i + 1 < argc) port = (uint16_t)atoi(argv[++i]);
     else if (!strcmp(argv[i], "--traffic-ms") && i + 1 < argc) traffic_ms = (uint32_t)atoi(argv[++i]);
-    else if (!strcmp(argv[i], "--store") && i + 1 < argc) store_capacity = (uint32_t)atoi(argv[++i]);
+    else if (!strcmp(argv[i], "--store") && i + 1 < argc) store_bytes = (uint32_t)atoi(argv[++i]);
     else if (!strcmp(argv[i], "--loss") && i + 1 < argc) sim_radio.set_loss((uint8_t)atoi(argv[++i]));
     else if (!strcmp(argv[i], "--dup") && i + 1 < argc) sim_radio.set_dup((uint8_t)atoi(argv[++i]));
     else if (!strcmp(argv[i], "--help")) {
-      printf("usage: meshpigeon-sim [--port N] [--traffic-ms N] [--store N] [--loss N] [--dup N]\n");
+      printf("usage: meshpigeon-sim [--port N] [--traffic-ms N] [--store BYTES] [--loss N] [--dup N]\n");
       return 0;
     }
   }
 
-  g_store = new PacketStore(store_capacity);
+  g_store = new PacketStore(store_bytes);
   g_processor = new CommandProcessor(*g_store, uptime, sim_settings, sim_radio,
                                      "SIM", "0.1.0");
   g_processor->boot();
@@ -140,8 +140,8 @@ int main(int argc, char** argv) {
     return 1;
   }
   listen(server, 4);
-  printf("meshpigeon-sim: listening on tcp:%u (store=%u, traffic=%ums)\n", port,
-         store_capacity, traffic_ms);
+  printf("meshpigeon-sim: listening on tcp:%u (store=%u bytes, traffic=%ums)\n", port,
+         store_bytes, traffic_ms);
   fflush(stdout);
 
   while (true) {

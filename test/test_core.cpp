@@ -120,7 +120,7 @@ static CommandProcessor* proc;
 static RecordingSink* sink;
 
 void setUp(void) {
-  store = new PacketStore(8);
+  store = new PacketStore(1024);  // byte budget: plenty for these tests
   raw_clock = new ManualClock(1000);
   clock_ = new UptimeClock(*raw_clock);
   sstore = new MemorySettingsStore();
@@ -241,8 +241,11 @@ void test_frame_reader_ignores_garbage_between_frames() {
 
 // ---- tests: packet store ------------------------------------------------------
 
+// Byte cost of one retained packet of the given payload length.
+static uint32_t rec_b(uint8_t len) { return 12 + len; }
+
 void test_store_append_and_fetch_order() {
-  PacketStore s(4);
+  PacketStore s(rec_b(1) * 4 + 1);  // room for 4 one-byte packets
   uint8_t data[4];
   for (int i = 1; i <= 6; i++) {
     data[0] = (uint8_t)i;
@@ -266,8 +269,105 @@ void test_store_append_and_fetch_order() {
   TEST_ASSERT_EQUAL(6, seen[5]);
 }
 
+void test_store_packs_variable_lengths() {
+  PacketStore s(120);
+  uint8_t big[30], one[1], mid[40], small[20];
+  memset(big, 0xAA, sizeof(big));
+  one[0] = 0x55;
+  memset(mid, 0xBB, sizeof(mid));
+  small[0] = 0x11;
+  uint32_t s1 = s.append(0, -70, 9, 0x02, big, 30);    // 42 bytes
+  s.append(0, -70, 9, 0x02, one, 1);                   // 13 bytes
+  uint32_t s3 = s.append(0, -70, 9, 0x02, mid, 40);    // 52 bytes
+  TEST_ASSERT_EQUAL(3, s.count());
+  TEST_ASSERT_EQUAL(rec_b(30) + rec_b(1) + rec_b(40), s.bytes_used());
+
+  // a 4th packet that does not fit evicts exactly the oldest one
+  uint32_t s4 = s.append(0, -70, 9, 0x02, small, 20);  // 32 bytes
+  TEST_ASSERT_EQUAL(3, s.count());
+  TEST_ASSERT_EQUAL(1, s.dropped());
+  TEST_ASSERT_EQUAL(2, s.oldest_seq());
+
+  // contents survive the eviction
+  StoredPacket e;
+  TEST_ASSERT_FALSE(s.get(s1, &e));  // s1 was evicted
+  TEST_ASSERT_TRUE(s.get(s3, &e));
+  TEST_ASSERT_EQUAL(0xBB, e.raw[0]);
+  TEST_ASSERT_EQUAL(40, e.len);
+  TEST_ASSERT_TRUE(s.get(s4, &e));
+  TEST_ASSERT_EQUAL(0x11, e.raw[0]);
+}
+
+void test_store_wraps_tail_to_front() {
+  PacketStore s(64);
+  uint8_t one[1] = {0x01}, long_[20];
+  memset(long_, 0x22, sizeof(long_));
+  s.append(0, -70, 9, 0x02, one, 1);    // seq 1: [0..13)
+  s.append(0, -70, 9, 0x02, one, 1);    // seq 2: [13..26)
+  s.append(0, -70, 9, 0x02, long_, 20); // seq 3: [26..58), 6 bytes left
+  TEST_ASSERT_EQUAL(3, s.count());
+
+  // 13 bytes do not fit at the tail: evict seq 1, wrap tail to the front
+  uint32_t s4 = s.append(0, -70, 9, 0x02, one, 1);
+  TEST_ASSERT_EQUAL(4, s4);
+  TEST_ASSERT_EQUAL(3, s.count());
+  TEST_ASSERT_EQUAL(1, s.dropped());
+  TEST_ASSERT_EQUAL(2, s.oldest_seq());
+
+  // every entry still readable, fetch order intact across the wrap
+  StoredPacket e;
+  TEST_ASSERT_TRUE(s.get(4, &e));
+  TEST_ASSERT_EQUAL(0x01, e.raw[0]);
+  TEST_ASSERT_TRUE(s.get(3, &e));
+  TEST_ASSERT_EQUAL(0x22, e.raw[0]);
+  TEST_ASSERT_EQUAL(20, e.len);
+  uint32_t seqs[8], n = 0;
+  s.fetch_since(0, 10, [&](const StoredPacket& x) { seqs[n++] = x.seq; return true; });
+  TEST_ASSERT_EQUAL(3, n);
+  TEST_ASSERT_EQUAL(2, seqs[0]);
+  TEST_ASSERT_EQUAL(3, seqs[1]);
+  TEST_ASSERT_EQUAL(4, seqs[2]);
+
+  // fill the wrapped hole, then overflow-evict cleanly
+  s.append(0, -70, 9, 0x02, one, 1);    // seq 5: fills the hole at [13..26)
+  TEST_ASSERT_EQUAL(3, s.count());
+  TEST_ASSERT_EQUAL(6, s.next_seq());
+  TEST_ASSERT_EQUAL(2, s.dropped());
+  TEST_ASSERT_EQUAL(3, s.oldest_seq());
+  s.append(0, -70, 9, 0x02, one, 1);    // seq 6: evicts seq 3, ring goes linear again
+  TEST_ASSERT_EQUAL(3, s.count());
+  TEST_ASSERT_EQUAL(3, s.dropped());
+  TEST_ASSERT_EQUAL(4, s.oldest_seq());
+  TEST_ASSERT_TRUE(s.get(6, &e));
+}
+
+void test_store_oversize_packet_never_fits() {
+  PacketStore s(64);  // smaller than 12 + 200
+  uint8_t big[MESHPGEON_MAX_RAW_PACKET];
+  memset(big, 0x77, sizeof(big));
+  TEST_ASSERT_EQUAL(0, s.append(0, -70, 9, 0x02, big, MESHPGEON_MAX_RAW_PACKET));
+  TEST_ASSERT_EQUAL(0, s.count());
+  TEST_ASSERT_EQUAL(1, s.dropped());
+  TEST_ASSERT_EQUAL(1, s.next_seq());  // no seq consumed by the drop
+  TEST_ASSERT_EQUAL(0, s.count_since(0));
+}
+
+void test_store_max_size_packet_roundtrip() {
+  PacketStore s(12 + MESHPGEON_MAX_RAW_PACKET);
+  uint8_t big[MESHPGEON_MAX_RAW_PACKET];
+  for (int i = 0; i < MESHPGEON_MAX_RAW_PACKET; i++) big[i] = (uint8_t)i;
+  uint32_t sq = s.append(1234, -100, -5, 0x01, big, MESHPGEON_MAX_RAW_PACKET);
+  TEST_ASSERT_EQUAL(1, sq);
+  StoredPacket e;
+  TEST_ASSERT_TRUE(s.get(sq, &e));
+  TEST_ASSERT_EQUAL(MESHPGEON_MAX_RAW_PACKET, e.len);
+  TEST_ASSERT_EQUAL_MEMORY(big, e.raw, MESHPGEON_MAX_RAW_PACKET);
+  TEST_ASSERT_EQUAL(-100, e.rssi);
+  TEST_ASSERT_EQUAL(1234, e.uptime_ms);
+}
+
 void test_store_since_cursor_is_resumable() {
-  PacketStore s(10);
+  PacketStore s(rec_b(4) * 10);
   uint8_t data[4] = {1, 2, 3, 4};
   for (int i = 0; i < 5; i++) s.append(0, -70, 9, 0x02, data, 1);
   // simulate a partial fetch that got seqs 1..2
@@ -276,7 +376,7 @@ void test_store_since_cursor_is_resumable() {
 }
 
 void test_store_get_across_wrap() {
-  PacketStore s(3);
+  PacketStore s(rec_b(4) * 3);
   uint8_t data[4] = {9, 9, 9, 9};
   for (int i = 0; i < 10; i++) s.append(0, -70, 9, 0x02, data, 1);
   StoredPacket e;
@@ -287,7 +387,7 @@ void test_store_get_across_wrap() {
 }
 
 void test_store_purge_resets_history() {
-  PacketStore s(3);
+  PacketStore s(rec_b(1) * 3);
   uint8_t data[4] = {7};
   s.append(0, -70, 9, 0x02, data, 1);
   s.clear();
@@ -295,6 +395,38 @@ void test_store_purge_resets_history() {
   TEST_ASSERT_EQUAL(2, s.next_seq());  // seq stays monotonic after purge
   uint32_t n = s.fetch_since(0, 10, [](const StoredPacket&) { return true; });
   TEST_ASSERT_EQUAL(0, n);
+}
+
+void test_store_randomized_matches_model() {
+  // Deterministic PRNG stress: compare against a simple reference model.
+  PacketStore s(100);
+  std::vector<uint32_t> seqs;   // model: retained seqs, oldest first
+  uint8_t payload[MESHPGEON_MAX_RAW_PACKET];
+  for (int i = 0; i < (int)sizeof(payload); i++) payload[i] = (uint8_t)(i * 7);
+  uint64_t rng = 0x12345678;
+
+  for (int op = 0; op < 5000; op++) {
+    rng = rng * 6364136223846793005ULL + 1442695040888963407ULL;
+    uint8_t len = (uint8_t)(1 + (rng >> 33) % MESHPGEON_MAX_RAW_PACKET);
+    uint32_t sq = s.append(0, -70, 9, 0x02, payload, len);
+    if (sq != 0) seqs.push_back(sq);
+    // evict from the model while it exceeds what the store can hold
+    while (seqs.size() > s.count()) seqs.erase(seqs.begin());
+
+    TEST_ASSERT_EQUAL(seqs.size(), s.count());
+    TEST_ASSERT_EQUAL(seqs.empty() ? 1 : seqs.front(), s.oldest_seq());
+
+    // every retained packet must round-trip intact
+    for (size_t i = 0; i < seqs.size(); i++) {
+      StoredPacket e;
+      TEST_ASSERT_TRUE_MESSAGE(s.get(seqs[i], &e), "get failed");
+      TEST_ASSERT_EQUAL(seqs[i], e.seq);
+      TEST_ASSERT_EQUAL(payload[(i * 3) % len], e.raw[(i * 3) % len]);
+    }
+    // fetch_since walks the whole retained range in order
+    uint32_t n = s.fetch_since(0, 100000, [](const StoredPacket&) { return true; });
+    TEST_ASSERT_EQUAL(seqs.size(), n);
+  }
 }
 
 // ---- tests: settings -----------------------------------------------------------
@@ -552,6 +684,11 @@ int main() {
   RUN_TEST(test_frame_reader_bad_crc_dropped);
   RUN_TEST(test_frame_reader_ignores_garbage_between_frames);
   RUN_TEST(test_store_append_and_fetch_order);
+  RUN_TEST(test_store_packs_variable_lengths);
+  RUN_TEST(test_store_wraps_tail_to_front);
+  RUN_TEST(test_store_oversize_packet_never_fits);
+  RUN_TEST(test_store_max_size_packet_roundtrip);
+  RUN_TEST(test_store_randomized_matches_model);
   RUN_TEST(test_store_since_cursor_is_resumable);
   RUN_TEST(test_store_get_across_wrap);
   RUN_TEST(test_store_purge_resets_history);

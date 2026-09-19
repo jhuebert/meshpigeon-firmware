@@ -45,10 +45,10 @@ static const char* const kBoardName =
 static const char* const kFwVersion = "0.1.0";
 static const char* const kBleName = "MeshPigeon";
 
-#if defined(MESHPGEON_STORE_CAPACITY)
-static const uint32_t kStoreCapacity = MESHPGEON_STORE_CAPACITY;
+#if defined(MESHPGEON_STORE_BYTES)
+static const uint32_t kStoreBytes = MESHPGEON_STORE_BYTES;
 #else
-static const uint32_t kStoreCapacity = 2000;
+static const uint32_t kStoreBytes = 65536;
 #endif
 
 // ---- board hooks -------------------------------------------------------------
@@ -225,7 +225,7 @@ void setup() {
   }
 #endif
 
-  g_store = new PacketStore(kStoreCapacity);
+  g_store = new PacketStore(kStoreBytes);
   g_settings_store = new BoardSettingsStore();
   g_uptime.set_boot_count(g_settings_store->load_boot_count() + 1);
   g_settings_store->save_boot_count(g_uptime.boot_count());

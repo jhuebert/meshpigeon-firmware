@@ -81,7 +81,7 @@ void CommandProcessor::on_frame(uint8_t cmd, uint8_t nonce, uint8_t status,
       uint32_t uptime = clock_.uptime_ms();
       uint32_t boot_count = clock_.boot_count();
       uint32_t store_count = store_.count();
-      uint32_t store_capacity = store_.capacity();
+      uint32_t store_capacity = store_.capacity();  // byte budget
       uint32_t store_dropped = store_.dropped();
       uint32_t oldest = store_.oldest_seq();
       memcpy(&p[i], &uptime, 4); i += 4;
