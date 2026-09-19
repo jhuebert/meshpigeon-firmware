@@ -1,0 +1,57 @@
+name: ci
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  host-tests:
+    name: host unit tests (no hardware)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.platformio
+            ~/.cache/pip
+          key: pio-native-${{ runner.os }}-${{ hashFiles('platformio.ini') }}
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: pip install platformio
+      - name: Run host tests
+        run: pio test -e native
+      - name: Build desktop simulator
+        run: pio run -e sim
+
+  boards:
+    name: build ${{ matrix.env }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        env: [xiao_wio, heltec_v3, t114]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.platformio
+            ~/.cache/pip
+          key: pio-${{ matrix.env }}-${{ runner.os }}-${{ hashFiles('platformio.ini') }}
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: pip install platformio
+      - run: pio run -e ${{ matrix.env }}
+
+  bench:
+    name: hardware bench (bench-ready label)
+    if: contains(github.event.pull_request.labels.*.name, 'bench-ready')
+    runs-on: [self-hosted, bench]
+    needs: [host-tests, boards]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Flash + smoke + scenario
+        run: ./scripts/bench.sh

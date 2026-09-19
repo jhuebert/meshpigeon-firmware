@@ -1,0 +1,3 @@
+If multiple phones are connected to the same device, packets they send (not repeat) are added to the packet history and sent to other connecting phones so they get the packets as well. This is required for DMs to work and for all phones on the radio to get group messages.
+Repeater enabled should be off by default. Maybe a message added that it should only ever be enabled when there aren't existing Meshcore infrastructure in your area. Hiking in a remote area with a group of people is the primary use case. Perhaps it auto-disables after a period of time.
+I don't know how important a Bluetooth pin is since no identity is ever on the radio device and packets are encrypted by the time they are sent to the radio to broadcast.

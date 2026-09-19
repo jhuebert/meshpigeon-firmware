@@ -1,0 +1,10 @@
+# PlatformIO build artifacts
+.pio/
+.pioenvs/
+.piolibdeps/
+# bench reports
+reports/
+# tooling
+.vscode/
+.idea/
+*.swp
