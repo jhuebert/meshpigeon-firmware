@@ -1,14 +1,14 @@
-# MeshHop — Project Plan Index
+# MeshPigeon — Project Plan Index
 
-**MeshHop** is a mesh-radio messaging system for people who have never heard of
+**MeshPigeon** is a mesh-radio messaging system for people who have never heard of
 MeshCore: install the app, connect a radio, start messaging. It consists of
 exactly two deliverables:
 
-1. **MeshHop App** — a native Android app. All protocol, identity, storage, and
-   UX intelligence lives here. (Repo: `meshhop-app`)
-2. **MeshHop Radio Firmware** — the bare-minimum firmware for a LoRa radio
+1. **MeshPigeon App** — a native Android app. All protocol, identity, storage, and
+   UX intelligence lives here. (Repo: `meshpigeon-app`)
+2. **MeshPigeon Radio Firmware** — the bare-minimum firmware for a LoRa radio
    board: fetch packets, send packets, set radio, survive reboots, remember
-   history. No protocol, no keys. (Repo: `meshhop-firmware`)
+   history. No protocol, no keys. (Repo: `meshpigeon-firmware`)
 
 The plan documents live in this directory. Read them in order for a first pass;
 each is self-contained for its topic.
@@ -16,7 +16,7 @@ each is self-contained for its topic.
 | File | Topic |
 |---|---|
 | [00-vision-and-principles.md](00-vision-and-principles.md) | Product vision, target user, guiding principles, success criteria |
-| [01-naming.md](01-naming.md) | Name candidates, availability, recommendation (**MeshHop**) |
+| [01-naming.md](01-naming.md) | Name candidates, availability, recommendation (**MeshPigeon**) |
 | [02-system-architecture.md](02-system-architecture.md) | Two-repo split, layered architecture, tech stack decision |
 | [03-mesh-protocol.md](03-mesh-protocol.md) | On-air protocol (MeshCore-compatible), crypto, packet handling in the app |
 | [04-firmware.md](04-firmware.md) | Firmware spec: packet memory, uptime timestamps, settings persistence, repeat mode |

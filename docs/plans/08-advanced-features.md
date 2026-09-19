@@ -24,11 +24,11 @@ screen with short, plain-language descriptions.
 
 ## 3. Identity import/export & backup
 
-- **Export identity:** encrypted file `.meshhop-identity` (AES-GCM, key from
+- **Export identity:** encrypted file `.meshpigeon-identity` (AES-GCM, key from
   user passphrase via Argon2id/PBKDF2) containing keys + name + flags.
   Shareable as file or QR (QR only for passphrase ≤ short, warns).
 - **Export full backup:** identity + contacts + channels + message history
-  (`.meshhop-backup`, schema-versioned).
+  (`.meshpigeon-backup`, schema-versioned).
 - **Import** restores on a new device; prompts about merging vs replacing.
 - **Cloud backup (optional, off by default):** Google Drive App Folder via
   Drive API — app-scoped, user-encrypted backup blobs on a schedule or

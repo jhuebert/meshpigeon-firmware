@@ -1,5 +1,5 @@
-#ifndef MESHHOP_COMMAND_PROCESSOR_H
-#define MESHHOP_COMMAND_PROCESSOR_H
+#ifndef MESHPGEON_COMMAND_PROCESSOR_H
+#define MESHPGEON_COMMAND_PROCESSOR_H
 
 #include <stddef.h>
 #include <stdint.h>
@@ -9,7 +9,7 @@
 #include "settings.h"
 #include "uptime_clock.h"
 
-namespace meshhop {
+namespace meshpigeon {
 
 /**
  * LoRa radio abstraction for the board ports. RadioLib sits behind this in
@@ -113,6 +113,6 @@ class CommandProcessor {
   size_t num_sinks_ = 0;
 };
 
-}  // namespace meshhop
+}  // namespace meshpigeon
 
-#endif  // MESHHOP_COMMAND_PROCESSOR_H
+#endif  // MESHPGEON_COMMAND_PROCESSOR_H

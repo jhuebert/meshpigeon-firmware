@@ -6,7 +6,7 @@
 ┌────────────────────────────────────────────────────────────┐
 │                       Android phone                        │
 │  ┌──────────────────────────────────────────────────────┐  │
-│  │                 MeshHop App (Kotlin)                │  │
+│  │                 MeshPigeon App (Kotlin)                │  │
 │  │                                                      │  │
 │  │  ┌────────────┐  ┌──────────┐  ┌──────────────────┐  │  │
 │  │  │  UI layer  │  │  Domain  │  │  Protocol layer  │  │  │
@@ -28,7 +28,7 @@
 └────────────┼───────────────────────────────────────────────┘
              ▼
 ┌────────────────────────────────────────────────────────────┐
-│                MeshHop Radio Firmware                     │
+│                MeshPigeon Radio Firmware                     │
 │  LoRa radio ─ packet store (max packets) ─ raw frame transport│
 │  No protocol, no keys. Persists radio settings.            │
 └────────────────────────────────────────────────────────────┘
@@ -40,8 +40,8 @@
 
 | Repo | Contents | Release cadence |
 |---|---|---|
-| `meshhop-app` | Android app; also contains a shared `protocol` spec doc and golden test vectors | Play Store; frequent |
-| `meshhop-firmware` | Firmware for supported boards; host-side simulator + tests | Rare; OTA/USB/BLE update when needed |
+| `meshpigeon-app` | Android app; also contains a shared `protocol` spec doc and golden test vectors | Play Store; frequent |
+| `meshpigeon-firmware` | Firmware for supported boards; host-side simulator + tests | Rare; OTA/USB/BLE update when needed |
 
 Both repos get a copy of `GUIDING-PRINCIPLES.md` (see 10-roadmap) derived from
 [00-vision](00-vision-and-principles.md).

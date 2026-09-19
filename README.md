@@ -1,17 +1,17 @@
-# MeshHop Radio Firmware
+# MeshPigeon Radio Firmware
 
 The dumbest possible durable radio: it receives LoRa packets into the largest
 memory it can hold, stamps each with uptime, keys up when told, and persists
 its radio settings across reboots. **No mesh protocol, no keys, no repeat
-logic** — all of that lives in the [MeshHop app](https://github.com/jhuebert/meshhop-app).
+logic** — all of that lives in the [MeshPigeon app](https://github.com/jhuebert/meshpigeon-app).
 
 ```
 ┌──────────────┐   BLE / USB CDC / TCP (raw frames)
-│  MeshHop App │ ◄──────────────────────────────────┐
+│  MeshPigeon App │ ◄──────────────────────────────────┐
 │  (all proto) │                                    │
 └──────────────┘                                    ▼
                                       ┌──────────────────────────┐
-                                      │ MeshHop Radio Firmware   │
+                                      │ MeshPigeon Radio Firmware   │
                                       │ radio → packet store     │
                                       │ (max packets, uptime)    │
                                       │ + persisted radio settings│
@@ -55,7 +55,7 @@ pio run -e sim
 ## Layout
 
 ```
-lib/meshhop-core/   board-neutral core: framing (COBS+CRC16), packet store,
+lib/meshpigeon-core/   board-neutral core: framing (COBS+CRC16), packet store,
                     settings persistence, uptime clock, command processor
 src/main.cpp        board main (wires radio + transports + core loop)
 src/radio_sx1262.h  RadioLib SX1262 port (raw bytes only)

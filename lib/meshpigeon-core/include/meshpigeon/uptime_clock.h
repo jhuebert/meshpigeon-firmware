@@ -1,9 +1,9 @@
-#ifndef MESHHOP_UPTIME_CLOCK_H
-#define MESHHOP_UPTIME_CLOCK_H
+#ifndef MESHPGEON_UPTIME_CLOCK_H
+#define MESHPGEON_UPTIME_CLOCK_H
 
 #include <stdint.h>
 
-namespace meshhop {
+namespace meshpigeon {
 
 /**
  * Free-running 32-bit uptime in milliseconds (wraps ~49.7 days). Wrap is
@@ -43,6 +43,6 @@ class ManualClock : public IMillisecondClock {
   uint32_t now_;
 };
 
-}  // namespace meshhop
+}  // namespace meshpigeon
 
-#endif  // MESHHOP_UPTIME_CLOCK_H
+#endif  // MESHPGEON_UPTIME_CLOCK_H

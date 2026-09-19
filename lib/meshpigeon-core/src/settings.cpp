@@ -1,10 +1,10 @@
-#include "meshhop/settings.h"
+#include "meshpigeon/settings.h"
 
 #include <string.h>
 
-#include "meshhop/framing.h"
+#include "meshpigeon/framing.h"
 
-namespace meshhop {
+namespace meshpigeon {
 
 RadioSettings RadioSettings::unset() {
   RadioSettings s;
@@ -67,4 +67,4 @@ bool RadioSettings::deserialize(const uint8_t* in, size_t len) {
   return true;
 }
 
-}  // namespace meshhop
+}  // namespace meshpigeon

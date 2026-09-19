@@ -1,16 +1,16 @@
-#ifndef MESHHOP_TRANSPORTS_H
-#define MESHHOP_TRANSPORTS_H
+#ifndef MESHPGEON_TRANSPORTS_H
+#define MESHPGEON_TRANSPORTS_H
 
 #include <Arduino.h>
 
-#if defined(MESHHOP_ESP32)
+#if defined(MESHPGEON_ESP32)
 #include <NimBLEDevice.h>
 #endif
 
-#include "meshhop/command_processor.h"
-#include "meshhop/framing.h"
+#include "meshpigeon/command_processor.h"
+#include "meshpigeon/framing.h"
 
-namespace meshhop {
+namespace meshpigeon {
 
 /**
  * USB CDC transport (host-facing serial console). One client. FrameReader
@@ -47,7 +47,7 @@ class UsbCdcSink : public IFrameSink {
   uint8_t frame_[FRAME_MAX_DECODED];
 };
 
-#if defined(MESHHOP_ESP32)
+#if defined(MESHPGEON_ESP32)
 
 static const BLEUUID kNusServiceUUID("6E400001-B5A3-F393-E0A9-E50E24DCCA9E");
 static const BLEUUID kNusWriteCharUUID("6E400002-B5A3-F393-E0A9-E50E24DCCA9E");
@@ -146,8 +146,8 @@ class BleSink : public IFrameSink, public NimBLEServerCallbacks,
   std::vector<PerConn> conns_state_;
 };
 
-#endif  // MESHHOP_ESP32
+#endif  // MESHPGEON_ESP32
 
-}  // namespace meshhop
+}  // namespace meshpigeon
 
-#endif  // MESHHOP_TRANSPORTS_H
+#endif  // MESHPGEON_TRANSPORTS_H

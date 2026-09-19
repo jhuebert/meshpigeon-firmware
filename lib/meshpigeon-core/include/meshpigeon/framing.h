@@ -1,12 +1,12 @@
-#ifndef MESHHOP_FRAMING_H
-#define MESHHOP_FRAMING_H
+#ifndef MESHPGEON_FRAMING_H
+#define MESHPGEON_FRAMING_H
 
 #include <stddef.h>
 #include <stdint.h>
 
 #include "protocol.h"
 
-namespace meshhop {
+namespace meshpigeon {
 
 /**
  * Frame layout on the wire (uniform across BLE / USB CDC / Wi-Fi TCP):
@@ -23,7 +23,7 @@ namespace meshhop {
  */
 
 // Max bytes a decoded frame can occupy (cmd+nonce+status+payload+crc16).
-#define FRAME_MAX_DECODED (3 + MESHHOP_MAX_FRAME_PAYLOAD + 2)
+#define FRAME_MAX_DECODED (3 + MESHPGEON_MAX_FRAME_PAYLOAD + 2)
 // COBS worst case adds one overhead byte per 254 plus terminator.
 #define FRAME_MAX_WIRE (FRAME_MAX_DECODED + (FRAME_MAX_DECODED + 253) / 254 + 1)
 
@@ -86,6 +86,6 @@ class FrameReader {
   bool overflow_;
 };
 
-}  // namespace meshhop
+}  // namespace meshpigeon
 
-#endif  // MESHHOP_FRAMING_H
+#endif  // MESHPGEON_FRAMING_H

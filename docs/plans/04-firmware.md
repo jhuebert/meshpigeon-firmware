@@ -1,6 +1,6 @@
 # 04 — Radio Firmware Specification
 
-Repo: `meshhop-firmware`. Design goal: **the dumbest possible durable radio.**
+Repo: `meshpigeon-firmware`. Design goal: **the dumbest possible durable radio.**
 No protocol, no keys, no message semantics, no repeat logic. It maximizes
 retained packets, persists its settings, and streams raw packets to whoever
 connects.
@@ -78,7 +78,7 @@ opinions violates the "all protocol in the app" rule.
   notify: radio→host) so generic tools also work; supports multiple connected
   centrals (see 05 §3).
 - USB-CDC: same frames, 115200 or line-coding-native.
-- Wi-Fi: raw TCP server (mDNS-advertised `meshhop-radio._tcp`), same frames.
+- Wi-Fi: raw TCP server (mDNS-advertised `meshpigeon-radio._tcp`), same frames.
 
 ## 4. Command set (summary — full spec in `docs/protocol.md` in the repo)
 
@@ -116,7 +116,7 @@ short string.
 - [ ] Survives 1,000-boot settings persistence soak.
 - [ ] Stores ≥ target packet count; overflow drops oldest cleanly.
 - [ ] `FETCH_PACKETS` replay lets a fresh app reconstruct exact history and times.
-- [ ] Repeat behavior verified **app-side only**: a connected MeshHop app
+- [ ] Repeat behavior verified **app-side only**: a connected MeshPigeon app
       forwards packets correctly; the radio alone never transmits without a
       `SEND_PACKET`.
 - [ ] 3 concurrent BLE clients can fetch history simultaneously without

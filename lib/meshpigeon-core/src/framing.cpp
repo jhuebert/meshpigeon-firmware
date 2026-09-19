@@ -1,8 +1,8 @@
-#include "meshhop/framing.h"
+#include "meshpigeon/framing.h"
 
 #include <string.h>
 
-namespace meshhop {
+namespace meshpigeon {
 
 size_t crc16_ccitt(uint16_t* crc_out, const uint8_t* data, size_t len,
                    uint16_t init) {
@@ -107,4 +107,4 @@ size_t FrameReader::feed(uint8_t byte, uint8_t* frame_out) {
   return 0;
 }
 
-}  // namespace meshhop
+}  // namespace meshpigeon

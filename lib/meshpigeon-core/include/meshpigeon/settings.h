@@ -1,10 +1,10 @@
-#ifndef MESHHOP_SETTINGS_H
-#define MESHHOP_SETTINGS_H
+#ifndef MESHPGEON_SETTINGS_H
+#define MESHPGEON_SETTINGS_H
 
 #include <stddef.h>
 #include <stdint.h>
 
-namespace meshhop {
+namespace meshpigeon {
 
 /**
  * Radio settings — the only opinionated thing the firmware holds, and the
@@ -74,6 +74,6 @@ class MemorySettingsStore : public SettingsStore {
   bool have_ = false;
 };
 
-}  // namespace meshhop
+}  // namespace meshpigeon
 
-#endif  // MESHHOP_SETTINGS_H
+#endif  // MESHPGEON_SETTINGS_H

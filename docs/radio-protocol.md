@@ -1,6 +1,6 @@
-# MeshHop Radio Protocol v1
+# MeshPigeon Radio Protocol v1
 
-The public, versioned contract between the MeshHop app and a MeshHop radio.
+The public, versioned contract between the MeshPigeon app and a MeshPigeon radio.
 The radio is **dumb on purpose**: it receives packets into the largest memory
 it can hold, stamps each with uptime, keys up on demand, and persists its
 radio settings. It speaks **no mesh protocol** and holds **no keys**.
@@ -158,7 +158,7 @@ Deliberately, per the product's guiding principles:
 
 ## 9. Reference
 
-- Firmware: `github.com/jhuebert/meshhop-firmware` (this repo)
-- App implementation: `meshhop-app :core-transport`
+- Firmware: `github.com/jhuebert/meshpigeon-firmware` (this repo)
+- App implementation: `meshpigeon-app :core-transport`
 - Original design: `docs/plans/03-mesh-protocol.md` (§5) and
   `docs/plans/04-firmware.md` (§3, §4) in the founding plan set.

@@ -1,6 +1,6 @@
 # 03 — Mesh Protocol (implemented entirely in the app)
 
-The app speaks a **MeshCore-compatible v1 on-air protocol**, so MeshHop users
+The app speaks a **MeshCore-compatible v1 on-air protocol**, so MeshPigeon users
 can interoperate with the existing MeshCore ecosystem (repeaters, companions).
 Reference: `MeshCore/docs/packet_format.md`, `payloads.md`, `companion_protocol.md`
 in the local MeshCore clone. We use it as the *wire spec*; none of MeshCore's
@@ -17,7 +17,7 @@ Firmware is protocol-free; everything below lives in `:core-protocol`.
 - **Header** `0bVVPPPPRR`: version (2 bits), payload type (4 bits), route type
   (2 bits).
 - **Route types:** flood (0x01), flood+transport (0x00), direct (0x02),
-  direct+transport (0x03). MeshHop v1 emits plain flood and direct;
+  direct+transport (0x03). MeshPigeon v1 emits plain flood and direct;
   transport codes are accepted and preserved on rebroadcast but not generated.
 - **Path length byte:** bits 0–5 hop count, bits 6–7 hash size code
   (1/2/3-byte path hashes; default **3-byte** per product decision, downgrade
@@ -112,11 +112,11 @@ logic) are computed in the app:
 
 ## 6. App-level conventions layered on GRP_DATA (best-effort, app-to-app)
 
-To satisfy UX needs without breaking MeshCore interop, MeshHop defines
+To satisfy UX needs without breaking MeshCore interop, MeshPigeon defines
 optional GRP_DATA sub-messages (ignored by other clients):
 
 - **Reactions:** `(msg_mac, emoji)` targeted at a specific message. UI covers
-  for non-MeshHop peers (see 07 §Reactions).
+  for non-MeshPigeon peers (see 07 §Reactions).
 - **Reply threading hints, read receipts (optional off by default),
   typing (off by default).** All are send-rate-limited and never retransmitted
   with the retry schedule.
@@ -140,7 +140,7 @@ region-specific mesh behavior exists in the protocol layer.
 
 ## 9. Interop test vectors
 
-Golden vectors live in `meshhop-app/core-protocol/src/test/resources/vectors/`:
+Golden vectors live in `meshpigeon-app/core-protocol/src/test/resources/vectors/`:
 encode/decode round-trips for every payload type, cross-checked against
 MeshCore firmware behavior on the bench (see 09). Vector rule: path byte
 length must never be treated as hop count — hop count derives from

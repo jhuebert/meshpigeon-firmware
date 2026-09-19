@@ -1,4 +1,4 @@
-# Contributing to MeshHop Firmware
+# Contributing to MeshPigeon Firmware
 
 Thanks for helping make the dumbest possible durable radio!
 

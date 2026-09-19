@@ -1,12 +1,12 @@
-#ifndef MESHHOP_RADIO_SX1262_H
-#define MESHHOP_RADIO_SX1262_H
+#ifndef MESHPGEON_RADIO_SX1262_H
+#define MESHPGEON_RADIO_SX1262_H
 
 #include <RadioLib.h>
 #include <SPI.h>
 
-#include "meshhop/command_processor.h"
+#include "meshpigeon/command_processor.h"
 
-namespace meshhop {
+namespace meshpigeon {
 
 /**
  * SX1262 (RadioLib) implementation of ILoRaRadio. TX starts asynchronously
@@ -15,18 +15,18 @@ namespace meshhop {
  */
 class Sx1262Radio : public ILoRaRadio {
  public:
-  Sx1262Radio() : radio_(new Module(MESHHOP_PIN_LORA_NSS, MESHHOP_PIN_LORA_DIO1,
-                                    MESHHOP_PIN_LORA_RST,
-                                    MESHHOP_PIN_LORA_BUSY)) {}
+  Sx1262Radio() : radio_(new Module(MESHPGEON_PIN_LORA_NSS, MESHPGEON_PIN_LORA_DIO1,
+                                    MESHPGEON_PIN_LORA_RST,
+                                    MESHPGEON_PIN_LORA_BUSY)) {}
 
   bool begin() {
     float tcxo = 0.0f;
-#ifdef MESHHOP_LORA_TCXO_MV
-    tcxo = MESHHOP_LORA_TCXO_MV / 1000.0f;
+#ifdef MESHPGEON_LORA_TCXO_MV
+    tcxo = MESHPGEON_LORA_TCXO_MV / 1000.0f;
 #endif
     int state = radio_.begin(0, 0, 0, 0, 0, 0, 0, tcxo, tcxo > 0.0f);
     if (state != RADIOLIB_ERR_NONE) return false;
-#ifdef MESHHOP_PIN_LORA_DIO2
+#ifdef MESHPGEON_PIN_LORA_DIO2
     // Some boards (XIAO WIO) switch the antenna via DIO2
     radio_.setDio2AsRfSwitch(true);
 #endif
@@ -83,8 +83,8 @@ class Sx1262Radio : public ILoRaRadio {
     bool crc_ok = !(irq & (RADIOLIB_SX126X_IRQ_CRC_ERR |
                            RADIOLIB_SX126X_IRQ_HEADER_ERR));
     int plen = radio_.getPacketLength(true);
-    uint8_t buf[MESHHOP_MAX_RAW_PACKET];
-    bool got = crc_ok && plen > 0 && plen <= MESHHOP_MAX_RAW_PACKET &&
+    uint8_t buf[MESHPGEON_MAX_RAW_PACKET];
+    bool got = crc_ok && plen > 0 && plen <= MESHPGEON_MAX_RAW_PACKET &&
                radio_.readData(buf, plen) == RADIOLIB_ERR_NONE;  // clears IRQ
     start_rx();
     if (!got) return false;
@@ -107,6 +107,6 @@ class Sx1262Radio : public ILoRaRadio {
   bool rx_paused_ = false;
 };
 
-}  // namespace meshhop
+}  // namespace meshpigeon
 
-#endif  // MESHHOP_RADIO_SX1262_H
+#endif  // MESHPGEON_RADIO_SX1262_H

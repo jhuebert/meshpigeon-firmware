@@ -57,8 +57,8 @@ QR/link*.
 - **Reply:** long-press → Reply → composer shows a quoted chip; sending
   prepends the sender's tag (`@name `) + body — plain-message interop
   compatible (requirement).
-- **React:** long-press → emoji row (👍❤️😂😮😢➕). MeshHop encodes a targeted
-  reaction via GRP_DATA; for non-MeshHop peers the app *also* offers
+- **React:** long-press → emoji row (👍❤️😂😮😢➕). MeshPigeon encodes a targeted
+  reaction via GRP_DATA; for non-MeshPigeon peers the app *also* offers
   "@name emoji" fall-back text which lands near the user's last message
   (best-effort requirement). Received reactions render under the target
   bubble; unmatched ones fall back to a normal message so nothing is lost.
@@ -100,7 +100,7 @@ QR/link*.
 - Create private channel (random or typed key), shared channel (name-derived
   key). Rename/delete with confirmation (delete = local leave; also offers
   "also delete history").
-- Channel sharing: QR + `https://meshhop.app/c/<base64>` deep link carrying
+- Channel sharing: QR + `https://meshpigeon.app/c/<base64>` deep link carrying
   name+key; **key paste is tolerant** (spaces/dashes stripped from 32-hex
 pasted keys); importing shows a preview ("Join channel **Trail Talk**?") before
   commit. Also works from the composer plus-menu ("Share channel") as a rich
@@ -121,7 +121,7 @@ pasted keys); importing shows a preview ("Join channel **Trail Talk**?") before
 - Per conversation: **Default / Important only / Muted**, plus optional
   per-conversation sound/LED override. Default for Public: muted-ish
   ("mentions only") to keep the mesh calm for newcomers; DMs default: notify.
-- Notification group "MeshHop"; reply action inline where safe; no message
+- Notification group "MeshPigeon"; reply action inline where safe; no message
   content on lock screen unless enabled.
 - **Storm control:** ≥ 3 s minimum interval between notifications; bursts
   collapse into one batch summary ("3 messages, 2 new contacts") so adverts

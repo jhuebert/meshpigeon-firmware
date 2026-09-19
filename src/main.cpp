@@ -1,46 +1,46 @@
 /**
- * MeshHop Radio Firmware — board main.
+ * MeshPigeon Radio Firmware — board main.
  *
  * Boot: load persisted settings, apply to the radio, start listening.
  * Loop: poll the radio for packets (store + live push), drain transports
  * (USB CDC, BLE), complete pending TX. No protocol, no keys — the app
  * decides everything (04-firmware).
  */
-#if defined(MESHHOP_ESP32) || defined(MESHHOP_NRF52)
+#if defined(MESHPGEON_ESP32) || defined(MESHPGEON_NRF52)
 
 #include <Arduino.h>
 
-#include "meshhop/command_processor.h"
-#include "meshhop/packet_store.h"
-#include "meshhop/settings.h"
-#include "meshhop/uptime_clock.h"
+#include "meshpigeon/command_processor.h"
+#include "meshpigeon/packet_store.h"
+#include "meshpigeon/settings.h"
+#include "meshpigeon/uptime_clock.h"
 #include "radio_sx1262.h"
 #include "transports.h"
 
-#if defined(MESHHOP_ESP32)
+#if defined(MESHPGEON_ESP32)
 #include <esp_system.h>
 #else
 #include <Adafruit_LittleFS.h>
 #endif
 
-using namespace meshhop;
+using namespace meshpigeon;
 
 static const char* const kBoardName =
-#if defined(MESHHOP_BOARD_XIAO_WIO)
+#if defined(MESHPGEON_BOARD_XIAO_WIO)
     "XIAO WIO";
-#elif defined(MESHHOP_BOARD_HELTEC_V3)
+#elif defined(MESHPGEON_BOARD_HELTEC_V3)
     "HELTEC V3";
-#elif defined(MESHHOP_BOARD_T114)
+#elif defined(MESHPGEON_BOARD_T114)
     "T114";
 #else
     "UNKNOWN";
 #endif
 
 static const char* const kFwVersion = "0.1.0";
-static const char* const kBleName = "MeshHop";
+static const char* const kBleName = "MeshPigeon";
 
-#if defined(MESHHOP_STORE_CAPACITY)
-static const uint32_t kStoreCapacity = MESHHOP_STORE_CAPACITY;
+#if defined(MESHPGEON_STORE_CAPACITY)
+static const uint32_t kStoreCapacity = MESHPGEON_STORE_CAPACITY;
 #else
 static const uint32_t kStoreCapacity = 2000;
 #endif
@@ -50,10 +50,10 @@ static const uint32_t kStoreCapacity = 2000;
 class BoardHooks : public IBoardHooks {
  public:
   uint16_t battery_mv() override {
-#if defined(MESHHOP_PIN_VBAT_ADC) && defined(MESHHOP_VBAT_DIVIDER)
+#if defined(MESHPGEON_PIN_VBAT_ADC) && defined(MESHPGEON_VBAT_DIVIDER)
     analogReadResolution(10);
-    uint32_t raw = analogRead(MESHHOP_PIN_VBAT_ADC);
-    float mv = (raw / 1023.0f) * 3600.0f * MESHHOP_VBAT_DIVIDER;
+    uint32_t raw = analogRead(MESHPGEON_PIN_VBAT_ADC);
+    float mv = (raw / 1023.0f) * 3600.0f * MESHPGEON_VBAT_DIVIDER;
     return (uint16_t)mv;
 #else
     return 0xFFFF;  // unknown on boards without a wired divider
@@ -79,7 +79,7 @@ class BoardHooks : public IBoardHooks {
 
 class BoardSettingsStore : public SettingsStore {
  public:
-  BoardSettingsStore() { nvs_.begin("meshhop", false); }
+  BoardSettingsStore() { nvs_.begin("meshpigeon", false); }
 
   bool save(const RadioSettings& s) override {
     uint8_t buf[RadioSettings::kSerializedSize];
@@ -165,7 +165,7 @@ static Sx1262Radio* g_radio;
 static CommandProcessor* g_processor;
 static UsbCdcSink g_usb;
 
-#ifdef MESHHOP_ESP32
+#ifdef MESHPGEON_ESP32
 static BleSink g_ble;
 #endif
 
@@ -180,7 +180,7 @@ static void radio_loop() {
   // Complete pending TX first — TX owns the air.
   g_processor->poll();
   // Then pull anything the radio caught.
-  uint8_t raw[MESHHOP_MAX_RAW_PACKET];
+  uint8_t raw[MESHPGEON_MAX_RAW_PACKET];
   uint8_t len;
   int8_t rssi, snr;
   if (g_radio->receive(raw, &len, &rssi, &snr)) {
@@ -201,7 +201,7 @@ void setup() {
                                      *g_radio, kBoardName, kFwVersion);
   g_processor->set_hooks(&g_hooks);
   g_processor->add_sink(&g_usb);
-#ifdef MESHHOP_ESP32
+#ifdef MESHPGEON_ESP32
   g_ble.begin(*g_processor, kBleName);
 #endif
 

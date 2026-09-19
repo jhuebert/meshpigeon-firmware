@@ -1,0 +1,8 @@
+{
+  "name": "meshpigeon-core",
+  "version": "0.1.0",
+  "description": "MeshPigeon board-neutral radio core: framing, packet store, settings, clock, command processor",
+  "license": "MIT",
+  "frameworks": "*",
+  "platforms": "*"
+}

@@ -3,13 +3,13 @@
 
 #include <unity.h>
 
-#include "meshhop/command_processor.h"
-#include "meshhop/framing.h"
-#include "meshhop/packet_store.h"
-#include "meshhop/settings.h"
-#include "meshhop/uptime_clock.h"
+#include "meshpigeon/command_processor.h"
+#include "meshpigeon/framing.h"
+#include "meshpigeon/packet_store.h"
+#include "meshpigeon/settings.h"
+#include "meshpigeon/uptime_clock.h"
 
-using namespace meshhop;
+using namespace meshpigeon;
 
 // ---- fakes -----------------------------------------------------------------
 
@@ -537,7 +537,7 @@ void test_get_info_shape() {
   proc->on_frame(CMD_GET_INFO, 0x66, 0, nullptr, 0, sink);
   TEST_ASSERT_EQUAL(STATUS_OK, sink->status(0));
   TEST_ASSERT_EQUAL(49, sink->payload_len(0));
-  TEST_ASSERT_EQUAL(MESHHOP_PROTOCOL_VERSION, sink->payload(0)[0]);
+  TEST_ASSERT_EQUAL(MESHPGEON_PROTOCOL_VERSION, sink->payload(0)[0]);
   TEST_ASSERT_EQUAL_MEMORY("TEST", sink->payload(0) + 3, 4);
 }
 

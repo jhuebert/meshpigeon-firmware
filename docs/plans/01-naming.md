@@ -3,29 +3,37 @@
 Requirement: a name that matches what the project does, is not already in use,
 is a little clever, and **contains "MC", "Mesh", or "Hop"**.
 
-## Recommendation: **MeshHop**
+## Decision (2026-09-19): **MeshPigeon**
 
-> *"Your message hops across the mesh."*
+> *"Messages that find their way home."*
 
-- **What it says.** Messages **hop** node-to-node across the **mesh** — literally
-  how flood routing works. It hits *two* of the three acceptable roots at once.
-- **Tone.** Short, bouncy, pronounceable, easy to say on a net ("send it over
-  MeshHop"), and it names the product's actual mechanic without jargon.
+- **What it says.** A carrier pigeon is exactly the product: an off-grid
+  message carrier that needs no towers, no internet, no infrastructure. It
+  covers both halves of the project — the Android app (the pigeon) and the
+  companion radio firmware (the bird's legs).
+- **Mascot.** A pigeon mascot is available and usable as-is — it doubles as
+  the app icon / adaptive icon and project logo.
 - **Availability (checked 2026-09-19):**
-  - GitHub: zero repositories matching `meshhop`.
-  - npm registry: zero packages; PyPI: not found.
-  - No known Play Store app of that name (final Play/F-Droid search still to be
-    done by a human — see checklist below).
-- **Suggested handles:** `github.com/meshhop-app` + `github.com/meshhop-firmware`
-  (or one `meshhop` org with two repos). Android package: `app.meshhop.android`.
+  - GitHub: `meshpigeon`, `meshpigeon-firmware`, `meshpigeon-android` all 404 (free).
+  - npm registry: no package; PyPI: not found.
+  - RDAP: `meshpigeon.app` unregistered.
+- **Handles:** `github.com/meshpigeon-firmware` + `github.com/meshpigeon-android`.
+  Android package: `app.meshpigeon.android`.
 
 ### Naming checklist before public launch (human tasks)
 
-- [ ] Play Store + App Store search: "meshhop" / "mesh hop"
+- [ ] Play Store + App Store search: "meshpigeon" / "mesh pigeon"
 - [ ] F-Droid / fdroid.org search
-- [ ] Domain check: `meshhop.app` (primary), `meshhop.net` (fallback)
-- [ ] Quick USPTO / EUIPO trademark search for "MeshHop" in software class 9/42
-- [ ] Google "meshhop app" / "meshhop radio" for collisions
+- [ ] Domain check: `meshpigeon.app` (primary), `meshpigeon.net` (fallback)
+- [ ] Quick USPTO / EUIPO trademark search for "MeshPigeon" in software class 9/42
+- [ ] Google "meshpigeon app" / "meshpigeon radio" for collisions
+
+## History: previous recommendation was **MeshHop** (rejected by Jason)
+
+The founding sessions used **MeshHop** ("your message hops across the mesh").
+Availability checks at the time were clean, but the name was rejected in
+review; the project was renamed to MeshPigeon on 2026-09-19 before any public
+release (repos were still local-only, so the rename cost nothing).
 
 ## Candidates considered and rejected
 
@@ -33,6 +41,8 @@ Constraint satisfied (contains MC / Mesh / Hop) but rejected or demoted:
 
 | Name | Why rejected / demoted |
 |---|---|
+| **MeshHop** | Rejected by Jason in review (2026-09-19) — replaced by MeshPigeon |
+| **MeshCourier** | Active Kotlin decentralized Bluetooth-mesh messenger already uses it (`sunflowerthu/MeshCourier`, pushed 2026-05) — real collision, found on recheck |
 | **MeshChat** | Already the de-facto name used in the MeshCore ecosystem (reticulum-meshchat, MeshCore companion) — guaranteed confusion |
 | **MeshComm / Meshcom** | "Meshcom" has prior telecom use (historical Finnish Meshcom Technologies); too generic; search-results collision with MeshCore/Meshtastic |
 | **Meshwork** | Prior apps exist (hackathon mesh contact-sharing, VR tool); too generic |
@@ -43,19 +53,21 @@ Constraint satisfied (contains MC / Mesh / Hop) but rejected or demoted:
 | **Hopwire** | `thomaskiefer/hopwire` exists; also a WW2 anti-personnel mine — bad association |
 | **Hopscotch** | Taken (kids coding platform) |
 | **Hopper** | Existing decentralized mesh social app (`anon16767/hopper-android`); airline/generic collisions |
-| **MeshHop** (previous draft) | User rejected — lacks the MC/Mesh/Hop root |
-| **Chainmail** (previous draft) | `kalix-systems/chainmail` already names an e2e group chat protocol |
-| **Grapevine, Weft, Heddle, Emesh** (previous drafts) | Prior collisions and/or no MC/Mesh/Hop root |
+| **MeshGram / MeshRunner / MeshRelay** | GitHub repos already exist under these names |
+| **Chainmail** | `kalix-systems/chainmail` already names an e2e group chat protocol |
+| **Grapevine, Weft, Heddle, Emesh** | Prior collisions and/or no MC/Mesh/Hop root |
 
-Fallbacks in order if a human check finds a collision: **HopNet** → **MeshHopper**
-→ revisit.
+Runner-ups kept on the shortlist (all clean at check time): **MeshHerald**
+(more formal — "the herald reports"), **MeshPorter**.
+
+Fallbacks in order if a human check finds a collision: **MeshHerald** →
+**MeshPorter** → **HopNet** → revisit.
 
 ## Brand voice
 
 - Friendly, plain-spoken, a little wry. Tagline options:
   - "Message anywhere. No towers, no internet."
-  - "Hop, skip, and a message." / "One hop at a time."
+  - "Messages that find their way home."
+  - "One hop at a time." (routing still hops — the pigeon just carries it)
 - In-app language rules (see 07-ux): never say advert/flood/payload — say
   "share my contact", "message reached the mesh", "channel".
-
-## Brand voice

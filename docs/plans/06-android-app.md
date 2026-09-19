@@ -1,6 +1,6 @@
 # 06 — Android App Architecture & Data Model
 
-Repo: `meshhop-app`. Native Kotlin + Compose, layered per 02. This doc covers
+Repo: `meshpigeon-app`. Native Kotlin + Compose, layered per 02. This doc covers
 the app skeleton, persistence, and identity handling.
 
 ## 1. Module → responsibility recap
@@ -54,7 +54,7 @@ settings(key PK, value)
 - Active identity defines: advertised name, keys, channel set, and the radio
   preference list is *shared across identities* (so switching radios never
   forces identity churn — the core reason for the split).
-- **Import/export** (Advanced): encrypted `.meshhop-identity` file + QR
+- **Import/export** (Advanced): encrypted `.meshpigeon-identity` file + QR
   (08 §3).
 - **Adverts, dumbed down:** a single "Share my contact" action on the profile
   and in the plus-menu; automatic re-advert only when the user enables

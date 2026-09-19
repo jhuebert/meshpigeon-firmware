@@ -1,9 +1,9 @@
-#include "meshhop/packet_store.h"
+#include "meshpigeon/packet_store.h"
 
 #include <stdlib.h>
 #include <string.h>
 
-namespace meshhop {
+namespace meshpigeon {
 
 PacketStore::PacketStore(uint32_t capacity) : capacity_(capacity) {
   slots_ = (StoredPacket*)calloc(capacity_, sizeof(StoredPacket));
@@ -13,7 +13,7 @@ PacketStore::~PacketStore() { free(slots_); }
 
 uint32_t PacketStore::append(uint32_t uptime_ms, int8_t rssi, int8_t snr,
                              uint8_t flags, const uint8_t* raw, uint8_t len) {
-  if (len > MESHHOP_MAX_RAW_PACKET) len = MESHHOP_MAX_RAW_PACKET;
+  if (len > MESHPGEON_MAX_RAW_PACKET) len = MESHPGEON_MAX_RAW_PACKET;
   if (count_ == capacity_) {  // drop oldest
     head_ = (head_ + 1) % capacity_;
     count_--;
@@ -48,4 +48,4 @@ uint32_t PacketStore::count_since_impl(uint32_t since_seq) const {
   return next_seq_ - first;
 }
 
-}  // namespace meshhop
+}  // namespace meshpigeon

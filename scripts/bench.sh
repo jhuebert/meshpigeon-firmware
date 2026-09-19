@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# MeshHop hardware bench (09-testing §3).
+# MeshPigeon hardware bench (09-testing §3).
 # Rig: two XIAO WIO + one nRF52 board on a powered USB hub.
 # Runs: flash all boards → smoke self-test → app-driven scenario via the
 # desktop simulator bridge; writes a JSON report to reports/.
@@ -11,7 +11,7 @@ mkdir -p "$REPORT_DIR"
 STAMP=$(date -u +%Y%m%dT%H%M%SZ)
 REPORT="$REPORT_DIR/bench-$STAMP.json"
 
-echo "== MeshHop bench $STAMP =="
+echo "== MeshPigeon bench $STAMP =="
 
 # 1. Flash each connected board (device paths resolved per rig; see rig.cfg)
 #    pio run -e xiao_wio -t upload --upload-port /dev/ttyACM0

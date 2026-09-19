@@ -1,5 +1,5 @@
 /**
- * MeshHop desktop radio simulator.
+ * MeshPigeon desktop radio simulator.
  *
  * A stand-in for a real radio on the bench: runs the identical board-neutral
  * command core behind a TCP bridge, with scriptable RF loss/duplicate
@@ -7,10 +7,10 @@
  * hardware (09-testing §2).
  *
  * Build:  pio run -e sim
- * Run:    .pio/build/sim/meshhop-sim --port 8765 [--loss 10] [--dup 5]
+ * Run:    .pio/build/sim/meshpigeon-sim --port 8765 [--loss 10] [--dup 5]
  *              [--traffic-ms 3000] [--store 5000]
  */
-#ifdef MESHHOP_NATIVE
+#ifdef MESHPGEON_NATIVE
 
 #include <arpa/inet.h>
 #include <netinet/in.h>
@@ -25,11 +25,11 @@
 
 #include <vector>
 
-#include "meshhop/command_processor.h"
-#include "meshhop/framing.h"
-#include "meshhop/sim_radio.h"
+#include "meshpigeon/command_processor.h"
+#include "meshpigeon/framing.h"
+#include "meshpigeon/sim_radio.h"
 
-using namespace meshhop;
+using namespace meshpigeon;
 
 static const uint32_t kDefaultCapacity = 5000;
 
@@ -116,7 +116,7 @@ int main(int argc, char** argv) {
     else if (!strcmp(argv[i], "--loss") && i + 1 < argc) sim_radio.set_loss((uint8_t)atoi(argv[++i]));
     else if (!strcmp(argv[i], "--dup") && i + 1 < argc) sim_radio.set_dup((uint8_t)atoi(argv[++i]));
     else if (!strcmp(argv[i], "--help")) {
-      printf("usage: meshhop-sim [--port N] [--traffic-ms N] [--store N] [--loss N] [--dup N]\n");
+      printf("usage: meshpigeon-sim [--port N] [--traffic-ms N] [--store N] [--loss N] [--dup N]\n");
       return 0;
     }
   }
@@ -140,7 +140,7 @@ int main(int argc, char** argv) {
     return 1;
   }
   listen(server, 4);
-  printf("meshhop-sim: listening on tcp:%u (store=%u, traffic=%ums)\n", port,
+  printf("meshpigeon-sim: listening on tcp:%u (store=%u, traffic=%ums)\n", port,
          store_capacity, traffic_ms);
   fflush(stdout);
 
@@ -181,4 +181,4 @@ int main(int argc, char** argv) {
 
 #else
 int main() { return 0; }
-#endif  // MESHHOP_NATIVE
+#endif  // MESHPGEON_NATIVE

@@ -1,16 +1,16 @@
-#ifndef MESHHOP_PROTOCOL_H
-#define MESHHOP_PROTOCOL_H
+#ifndef MESHPGEON_PROTOCOL_H
+#define MESHPGEON_PROTOCOL_H
 
 /**
- * MeshHop radio-protocol constants — the public contract documented in
- * docs/radio-protocol.md. Keep in sync with meshhop-app's :core-transport.
+ * MeshPigeon radio-protocol constants — the public contract documented in
+ * docs/radio-protocol.md. Keep in sync with meshpigeon-app's :core-transport.
  *
  * The firmware speaks no mesh protocol. These commands are how a companion
  * app drives a dumb radio: fetch packets, send packets, set radio, survive
  * reboots, remember history.
  */
 
-#define MESHHOP_PROTOCOL_VERSION  1
+#define MESHPGEON_PROTOCOL_VERSION  1
 
 // ---- Command codes -------------------------------------------------------
 // Host -> radio commands (request/response).
@@ -39,7 +39,7 @@
 #define STATUS_ERR_NO_RADIO     0x06
 
 // ---- Limits (from the plan, 04-firmware §1) ------------------------------
-#define MESHHOP_MAX_RAW_PACKET    200   // raw OTA bytes we keep per entry
-#define MESHHOP_MAX_FRAME_PAYLOAD 220   // biggest payload we'll accept in a frame
+#define MESHPGEON_MAX_RAW_PACKET    200   // raw OTA bytes we keep per entry
+#define MESHPGEON_MAX_FRAME_PAYLOAD 220   // biggest payload we'll accept in a frame
 
-#endif  // MESHHOP_PROTOCOL_H
+#endif  // MESHPGEON_PROTOCOL_H

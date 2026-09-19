@@ -1,6 +1,6 @@
-# MeshHop Firmware — Guiding Principles
+# MeshPigeon Firmware — Guiding Principles
 
-> **MeshHop exists so a stranger to mesh radio can install, connect, and
+> **MeshPigeon exists so a stranger to mesh radio can install, connect, and
 > message in minutes — offline, forever.**
 >
 > 1. Protocol in the app, never the firmware. Firmware stays dumb and durable.

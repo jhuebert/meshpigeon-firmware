@@ -2,13 +2,13 @@
 
 ## 1. Repository scaffolding
 
-Two public repos (under a `meshhop` GitHub org or `jhuebert` namespace):
+Two public repos (under a `meshpigeon` GitHub org or `jhuebert` namespace):
 
 ```
-meshhop-app/         Kotlin, Gradle multi-module, AGP/Kotlin pinned, CI: GitHub Actions
+meshpigeon-app/         Kotlin, Gradle multi-module, AGP/Kotlin pinned, CI: GitHub Actions
   GUIDING-PRINCIPLES.md   ← adapted from 00-vision (app-flavored)
   docs/  (user docs live here too — see §4)
-meshhop-firmware/    PlatformIO, boards/<board>/, host tests, CI: build-all + host tests
+meshpigeon-firmware/    PlatformIO, boards/<board>/, host tests, CI: build-all + host tests
   GUIDING-PRINCIPLES.md   ← firmware-flavored
 ```
 
@@ -22,7 +22,7 @@ documents.
 |---|---|---|---|
 | M0 | Foundations | Both repos scaffolded, CI green, `RadioAdapter` SPI + framing codec + simulator skeleton | A `PING` round-trips over BLE to a real board |
 | M1 | Talk | Firmware packet store + settings persistence; app: onboarding, connect, public channel, send/receive TXT_MSG, uptime mapping, Chats UI v1 | Two phones message over one radio, plus history catch-up on reconnect |
-| M2 | People | Identities (multi), adverts + contacts, DMs with crypto, ACK states, notifications, blocking, search | DM between two MeshHop phones via flood; strangers' DMs create requests |
+| M2 | People | Identities (multi), adverts + contacts, DMs with crypto, ACK states, notifications, blocking, search | DM between two MeshPigeon phones via flood; strangers' DMs create requests |
 | M3 | Channels | Channel create/rename/delete/pin, QR/links, reactions/replies per 07, map v1, mark-all-read | Channel round-trip incl. QR join on a second device |
 | M4 | Dumb-radio polish | App-driven repeater (app-side dedup + rebroadcast), multi-client sharing/epoch (05 §3), radio preference order, character budget UI, message details | Bench: 3 phones × 1 radio incl. settings-epoch and repeater flows |
 | M5 | Advanced & durability | Trace path, path-size setting, import/export, optional Drive backup, location share, firmware update in-app, perf/battery pass | All Advanced features demo-able; 72 h soak passes |
@@ -34,7 +34,7 @@ guessed map locations, communities, GPX export.
 
 ## 3. Per-repo GUIDING-PRINCIPLES.md (both repos carry this verbatim header)
 
-> **MeshHop exists so a stranger to mesh radio can install, connect, and
+> **MeshPigeon exists so a stranger to mesh radio can install, connect, and
 > message in minutes — offline, forever.**
 >
 > 1. Protocol in the app, never the firmware. Firmware stays dumb and durable.

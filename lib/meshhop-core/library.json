@@ -1,8 +1,0 @@
-{
-  "name": "meshhop-core",
-  "version": "0.1.0",
-  "description": "MeshHop board-neutral radio core: framing, packet store, settings, clock, command processor",
-  "license": "MIT",
-  "frameworks": "*",
-  "platforms": "*"
-}

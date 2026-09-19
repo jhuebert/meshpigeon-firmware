@@ -4,11 +4,11 @@ Source studied: `~/dev/meshcore/meshcore-open` (Flutter client by zjs81, with
 documentation in `documentation/` and `docs/BLE_PROTOCOL.md`). Purpose: mine it
 for problems we *will* hit, make our decisions now — **not** to copy its UX
 (the user's stated design goal rules that out; several of its choices are
-wrong for MeshHop and are listed as rejections).
+wrong for MeshPigeon and are listed as rejections).
 
 ## 1. Fundamental architecture differences (drive everything below)
 
-| Aspect | MeshCore Open | MeshHop (our plan) |
+| Aspect | MeshCore Open | MeshPigeon (our plan) |
 |---|---|---|
 | Identity & keys | Live **on the radio firmware** | Live **in the app** (keystore); radio never holds keys |
 | Contacts/channels | Stored on device firmware (limited: 40 channels, fixed contact slots) | Unlimited, in app DB |
@@ -137,7 +137,7 @@ payloads). → 04 §4, 07 §1.
 5. Clipboard contact URI + zero-hop "say hi nearby" (07 §5).
 6. Radio battery as connection status (04 §4, 07 §1).
 7. Start-on-boot for the connection service — their background service does
-   *not* auto-start after reboot; MeshHop will offer "Reconnect after phone
+   *not* auto-start after reboot; MeshPigeon will offer "Reconnect after phone
    restart" in Settings (06 §6).
 8. i18n scaffolding at launch (06 §7).
 9. Region preset table breadth (03 §8).

@@ -3,7 +3,7 @@
 Both repos get comprehensive testing per the software-development requirements:
 layered code that is unit-testable by construction, plus a hardware bench.
 
-## 1. App (`meshhop-app`)
+## 1. App (`meshpigeon-app`)
 
 | Layer | Tooling | Target |
 |---|---|---|
@@ -32,7 +32,7 @@ Key suites:
 
 ## 2. Deterministic radio simulation (shared design)
 
-`meshhop-firmware/sim/` provides a **desktop radio simulator** implementing
+`meshpigeon-firmware/sim/` provides a **desktop radio simulator** implementing
 the identical command framing (04 §4) with scriptable on-air behavior
 (loss %, latency, dupes). Both repos test against it:
 
@@ -45,7 +45,7 @@ the identical command framing (04 §4) with scriptable on-air behavior
   built and verified against it first; hardware is only touched for real-RF
   validation (§3 bench, §4 interop).
 
-## 3. Firmware (`meshhop-firmware`)
+## 3. Firmware (`meshpigeon-firmware`)
 
 - **Host-side unit tests** (native, run in CI): ring buffer overflow/order,
   settings persistence (against a flash emulation), SLIP/COBS
@@ -60,7 +60,7 @@ the identical command framing (04 §4) with scriptable on-air behavior
 
 ## 4. Interop (field) testing
 
-- Bench: MeshHop ↔ MeshCore companion/repeater exchanges (adverts, GRP_TXT,
+- Bench: MeshPigeon ↔ MeshCore companion/repeater exchanges (adverts, GRP_TXT,
   DM, ACK) using the local MeshCore tree and `meshcore_py` tooling already in
   this workspace; documented vectors feed back into §1 golden tests.
 - Field checklist: two-node direct, three-node via repeater, app-driven
@@ -69,9 +69,9 @@ the identical command framing (04 §4) with scriptable on-air behavior
 
 ## 5. CI gates
 
-- `meshhop-app`: PR → lint (ktlint/detekt), unit tests, Robolectric UI tests,
+- `meshpigeon-app`: PR → lint (ktlint/detekt), unit tests, Robolectric UI tests,
   assemble release; nightly instrumented suite.
-- `meshhop-firmware`: PR → host tests + build all board targets;
+- `meshpigeon-firmware`: PR → host tests + build all board targets;
   bench job runs only on `bench-ready` label (hardware connected).
 - Coverage ratchets: configured minimums enforced, no silent drops.
 

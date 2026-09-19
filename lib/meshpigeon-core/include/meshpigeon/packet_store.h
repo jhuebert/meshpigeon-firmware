@@ -1,12 +1,12 @@
-#ifndef MESHHOP_PACKET_STORE_H
-#define MESHHOP_PACKET_STORE_H
+#ifndef MESHPGEON_PACKET_STORE_H
+#define MESHPGEON_PACKET_STORE_H
 
 #include <stddef.h>
 #include <stdint.h>
 
 #include "protocol.h"
 
-namespace meshhop {
+namespace meshpigeon {
 
 /**
  * One retained packet. Raw on-air bytes only — the firmware cannot read
@@ -22,7 +22,7 @@ struct StoredPacket {
   int8_t snr;
   uint8_t flags;  // 0x01 = sent by us (TX), 0x02 = received
   uint8_t len;
-  uint8_t raw[MESHHOP_MAX_RAW_PACKET];
+  uint8_t raw[MESHPGEON_MAX_RAW_PACKET];
 };
 
 // seq + uptime + rssi + snr + len + flags
@@ -97,6 +97,6 @@ class PacketStore {
   uint32_t dropped_ = 0;   // entries evicted by overflow
 };
 
-}  // namespace meshhop
+}  // namespace meshpigeon
 
-#endif  // MESHHOP_PACKET_STORE_H
+#endif  // MESHPGEON_PACKET_STORE_H

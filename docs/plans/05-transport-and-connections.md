@@ -1,6 +1,6 @@
 # 05 — Transport & Radio Connections
 
-Repo: `meshhop-app`, module `:core-transport`. Goal: connect to any supported
+Repo: `meshpigeon-app`, module `:core-transport`. Goal: connect to any supported
 radio over any link, connect to several radios at once, and silently prefer the
 radios the user likes — without the user ever changing their identity to do it.
 
