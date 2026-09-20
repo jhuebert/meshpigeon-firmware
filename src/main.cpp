@@ -130,6 +130,10 @@ class BoardSettingsStore : public SettingsStore {
     uint8_t buf[RadioSettings::kSerializedSize];
     s.serialize(buf);
     InternalFS.begin();
+    // FILE_O_WRITE does not truncate (appends) on this BSP — remove first,
+    // or load() would keep reading the first record (MeshCore IdentityStore
+    // uses the same remove-then-write pattern on nRF52).
+    InternalFS.remove("/radio.bin");
     Adafruit_LittleFS_Namespace::File f("radio.bin",
                                         Adafruit_LittleFS_Namespace::FILE_O_WRITE, InternalFS);
     if (!f) return false;
@@ -164,6 +168,7 @@ class BoardSettingsStore : public SettingsStore {
   }
   void save_boot_count(uint32_t n) {
     InternalFS.begin();
+    InternalFS.remove("/boots.bin");  // FILE_O_WRITE appends, no truncate
     Adafruit_LittleFS_Namespace::File f("boots.bin",
                                         Adafruit_LittleFS_Namespace::FILE_O_WRITE, InternalFS);
     if (!f) return;
@@ -238,7 +243,7 @@ void setup() {
   g_processor = new CommandProcessor(*g_store, g_uptime, *g_settings_store,
                                      *g_radio, kBoardName, kFwVersion);
   g_processor->set_hooks(&g_hooks);
-  g_processor->add_sink(&g_usb);
+  g_usb.begin(*g_processor);  // sets the back-pointer; add_sink() alone leaves proc_ null
 #ifdef MESHPIGEON_ESP32
   g_ble.begin(*g_processor, kBleName);
 #endif

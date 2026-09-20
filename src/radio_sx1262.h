@@ -24,6 +24,12 @@ class Sx1262Radio : public ILoRaRadio {
 #ifdef MESHPIGEON_LORA_TCXO_MV
     tcxo = MESHPIGEON_LORA_TCXO_MV / 1000.0f;
 #endif
+#ifdef MESHPIGEON_PIN_RADIO_POWER_EN
+    // Boards that gate the radio's supply (T114: SX126X_POWER_EN)
+    pinMode(MESHPIGEON_PIN_RADIO_POWER_EN, OUTPUT);
+    digitalWrite(MESHPIGEON_PIN_RADIO_POWER_EN, HIGH);
+    delay(10);
+#endif
     // RadioLib validates these at begin(); the CommandProcessor applies the
     // persisted settings right after (last_settings_ starts at the unset
     // region preset).
@@ -35,6 +41,11 @@ class Sx1262Radio : public ILoRaRadio {
                              tcxo > 0.0f);
     if (state != RADIOLIB_ERR_NONE) return false;
     // Headroom for +22 dBm TX (MeshCore SX126X_CURRENT_LIMIT=140)
+#ifdef MESHPIGEON_PIN_RADIO_RXEN
+    // Boards with a dedicated RX-enable line (XIAO WIO) use a manual RF-switch
+    // pin, not SX1262 DIO2 (MeshCore SX126X_RXEN)
+    radio_.setRfSwitchPins(MESHPIGEON_PIN_RADIO_RXEN, RADIOLIB_NC);
+#endif
     state = radio_.setCurrentLimit(140.0f);
     if (state != RADIOLIB_ERR_NONE) return false;
 #ifdef MESHPIGEON_RADIO_RX_BOOSTED_GAIN
