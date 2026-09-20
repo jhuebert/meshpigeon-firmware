@@ -104,7 +104,8 @@ Requests are `cmd + nonce + status 0x00 + payload`; responses use the same
 31   store capacity u32   (store byte budget — entries are variable-length,
                           so packet capacity depends on packet sizes)
 35   store dropped  u32   (packets evicted by overflow)
-39   oldest seq     u32   (0 if store empty)
+39   oldest seq     u32   (first retained seq, or the next seq to be
+                          assigned when the store is empty)
 43   config epoch   u32   (see §7.1)
 47   battery mV     u16   (0xFFFF = unknown; device status, not mesh telemetry)
 ```
