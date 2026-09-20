@@ -1,5 +1,5 @@
-#ifndef MESHPGEON_RADIO_SX1262_H
-#define MESHPGEON_RADIO_SX1262_H
+#ifndef MESHPIGEON_RADIO_SX1262_H
+#define MESHPIGEON_RADIO_SX1262_H
 
 #include <RadioLib.h>
 #include <SPI.h>
@@ -15,14 +15,14 @@ namespace meshpigeon {
  */
 class Sx1262Radio : public ILoRaRadio {
  public:
-  Sx1262Radio() : radio_(new Module(MESHPGEON_PIN_LORA_NSS, MESHPGEON_PIN_LORA_DIO1,
-                                    MESHPGEON_PIN_LORA_RST,
-                                    MESHPGEON_PIN_LORA_BUSY)) {}
+  Sx1262Radio() : radio_(new Module(MESHPIGEON_PIN_LORA_NSS, MESHPIGEON_PIN_LORA_DIO1,
+                                    MESHPIGEON_PIN_LORA_RST,
+                                    MESHPIGEON_PIN_LORA_BUSY)) {}
 
   bool begin() {
     float tcxo = 0.0f;
-#ifdef MESHPGEON_LORA_TCXO_MV
-    tcxo = MESHPGEON_LORA_TCXO_MV / 1000.0f;
+#ifdef MESHPIGEON_LORA_TCXO_MV
+    tcxo = MESHPIGEON_LORA_TCXO_MV / 1000.0f;
 #endif
     // RadioLib validates these at begin(); the CommandProcessor applies the
     // persisted settings right after (last_settings_ starts at the unset
@@ -37,10 +37,10 @@ class Sx1262Radio : public ILoRaRadio {
     // Headroom for +22 dBm TX (MeshCore SX126X_CURRENT_LIMIT=140)
     state = radio_.setCurrentLimit(140.0f);
     if (state != RADIOLIB_ERR_NONE) return false;
-#ifdef MESHPGEON_RADIO_RX_BOOSTED_GAIN
+#ifdef MESHPIGEON_RADIO_RX_BOOSTED_GAIN
     radio_.setRxBoostedGainMode(true);
 #endif
-#ifdef MESHPGEON_RADIO_DIO2_RFSWITCH
+#ifdef MESHPIGEON_RADIO_DIO2_RFSWITCH
     // Some boards (XIAO WIO, Heltec V3) switch the antenna via DIO2
     radio_.setDio2AsRfSwitch(true);
 #endif
@@ -100,8 +100,8 @@ class Sx1262Radio : public ILoRaRadio {
     bool crc_ok = !(irq & (RADIOLIB_SX126X_IRQ_CRC_ERR |
                            RADIOLIB_SX126X_IRQ_HEADER_ERR));
     int plen = radio_.getPacketLength(true);
-    uint8_t buf[MESHPGEON_MAX_RAW_PACKET];
-    bool got = crc_ok && plen > 0 && plen <= MESHPGEON_MAX_RAW_PACKET &&
+    uint8_t buf[MESHPIGEON_MAX_RAW_PACKET];
+    bool got = crc_ok && plen > 0 && plen <= MESHPIGEON_MAX_RAW_PACKET &&
                radio_.readData(buf, plen) == RADIOLIB_ERR_NONE;  // clears IRQ
     start_rx();
     if (!got) return false;
@@ -126,4 +126,4 @@ class Sx1262Radio : public ILoRaRadio {
 
 }  // namespace meshpigeon
 
-#endif  // MESHPGEON_RADIO_SX1262_H
+#endif  // MESHPIGEON_RADIO_SX1262_H

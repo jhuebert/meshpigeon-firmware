@@ -10,7 +10,7 @@
  * Run:    .pio/build/sim/meshpigeon-sim --port 8765 [--loss 10] [--dup 5]
  *              [--traffic-ms 3000] [--store 5000]
  */
-#ifdef MESHPGEON_NATIVE
+#ifdef MESHPIGEON_NATIVE
 
 #include <arpa/inet.h>
 #include <netinet/in.h>
@@ -181,4 +181,4 @@ int main(int argc, char** argv) {
 
 #else
 int main() { return 0; }
-#endif  // MESHPGEON_NATIVE
+#endif  // MESHPIGEON_NATIVE

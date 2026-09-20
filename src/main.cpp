@@ -6,7 +6,7 @@
  * (USB CDC, BLE), complete pending TX. No protocol, no keys — the app
  * decides everything (04-firmware).
  */
-#if defined(MESHPGEON_ESP32) || defined(MESHPGEON_NRF52)
+#if defined(MESHPIGEON_ESP32) || defined(MESHPIGEON_NRF52)
 
 #include <Arduino.h>
 
@@ -14,14 +14,14 @@
 #include "meshpigeon/packet_store.h"
 #include "meshpigeon/settings.h"
 #include "meshpigeon/uptime_clock.h"
-#if defined(MESHPGEON_RADIO_LR1110)
+#if defined(MESHPIGEON_RADIO_LR1110)
 #include "radio_lr1110.h"
 #else
 #include "radio_sx1262.h"
 #endif
 #include "transports.h"
 
-#if defined(MESHPGEON_ESP32)
+#if defined(MESHPIGEON_ESP32)
 #include <esp_system.h>
 #else
 #include <Adafruit_LittleFS.h>
@@ -30,13 +30,13 @@
 using namespace meshpigeon;
 
 static const char* const kBoardName =
-#if defined(MESHPGEON_BOARD_XIAO_WIO)
+#if defined(MESHPIGEON_BOARD_XIAO_WIO)
     "XIAO WIO";
-#elif defined(MESHPGEON_BOARD_HELTEC_V3)
+#elif defined(MESHPIGEON_BOARD_HELTEC_V3)
     "HELTEC V3";
-#elif defined(MESHPGEON_BOARD_T114)
+#elif defined(MESHPIGEON_BOARD_T114)
     "T114";
-#elif defined(MESHPGEON_BOARD_T1000E)
+#elif defined(MESHPIGEON_BOARD_T1000E)
     "T1000-E";
 #else
     "UNKNOWN";
@@ -45,8 +45,8 @@ static const char* const kBoardName =
 static const char* const kFwVersion = "0.1.0";
 static const char* const kBleName = "MeshPigeon";
 
-#if defined(MESHPGEON_STORE_BYTES)
-static const uint32_t kStoreBytes = MESHPGEON_STORE_BYTES;
+#if defined(MESHPIGEON_STORE_BYTES)
+static const uint32_t kStoreBytes = MESHPIGEON_STORE_BYTES;
 #else
 static const uint32_t kStoreBytes = 65536;
 #endif
@@ -56,23 +56,23 @@ static const uint32_t kStoreBytes = 65536;
 class BoardHooks : public IBoardHooks {
  public:
   uint16_t battery_mv() override {
-#if defined(MESHPGEON_BOARD_T1000E)
+#if defined(MESHPIGEON_BOARD_T1000E)
     // MeshCore T1000eBoard::getBattMilliVolts: sense rail on for the read,
     // 3.0 V internal reference at 12 bits, ADC_MULTIPLIER 2.0.
-    digitalWrite(MESHPGEON_PIN_3V3_EN, HIGH);
+    digitalWrite(MESHPIGEON_PIN_3V3_EN, HIGH);
     analogReference(AR_INTERNAL_3_0);
     analogReadResolution(12);
     delay(10);
-    float volts = (analogRead(MESHPGEON_PIN_VBAT_ADC) * MESHPGEON_ADC_MULTIPLIER *
+    float volts = (analogRead(MESHPIGEON_PIN_VBAT_ADC) * MESHPIGEON_ADC_MULTIPLIER *
                    3.0f) / 4096.0f;
-    digitalWrite(MESHPGEON_PIN_3V3_EN, LOW);
+    digitalWrite(MESHPIGEON_PIN_3V3_EN, LOW);
     analogReference(AR_DEFAULT);  // put back to default
     analogReadResolution(10);
     return (uint16_t)(volts * 1000);
-#elif defined(MESHPGEON_PIN_VBAT_ADC) && defined(MESHPGEON_VBAT_DIVIDER)
+#elif defined(MESHPIGEON_PIN_VBAT_ADC) && defined(MESHPIGEON_VBAT_DIVIDER)
     analogReadResolution(10);
-    uint32_t raw = analogRead(MESHPGEON_PIN_VBAT_ADC);
-    float mv = (raw / 1023.0f) * 3600.0f * MESHPGEON_VBAT_DIVIDER;
+    uint32_t raw = analogRead(MESHPIGEON_PIN_VBAT_ADC);
+    float mv = (raw / 1023.0f) * 3600.0f * MESHPIGEON_VBAT_DIVIDER;
     return (uint16_t)mv;
 #else
     return 0xFFFF;  // unknown on boards without a wired divider
@@ -180,7 +180,7 @@ class BoardSettingsStore : public SettingsStore {
 static PacketStore* g_store;
 static BoardSettingsStore* g_settings_store;
 static BoardHooks g_hooks;
-#if defined(MESHPGEON_RADIO_LR1110)
+#if defined(MESHPIGEON_RADIO_LR1110)
 static Lr1110Radio* g_radio;
 #else
 static Sx1262Radio* g_radio;
@@ -188,7 +188,7 @@ static Sx1262Radio* g_radio;
 static CommandProcessor* g_processor;
 static UsbCdcSink g_usb;
 
-#ifdef MESHPGEON_ESP32
+#ifdef MESHPIGEON_ESP32
 static BleSink g_ble;
 #endif
 
@@ -203,7 +203,7 @@ static void radio_loop() {
   // Complete pending TX first — TX owns the air.
   g_processor->poll();
   // Then pull anything the radio caught.
-  uint8_t raw[MESHPGEON_MAX_RAW_PACKET];
+  uint8_t raw[MESHPIGEON_MAX_RAW_PACKET];
   uint8_t len;
   int8_t rssi, snr;
   if (g_radio->receive(raw, &len, &rssi, &snr)) {
@@ -214,7 +214,7 @@ static void radio_loop() {
 void setup() {
   Serial.begin(115200);
 
-#if defined(MESHPGEON_NRF52) && defined(MESHPGEON_BOARD_T1000E)
+#if defined(MESHPIGEON_NRF52) && defined(MESHPIGEON_BOARD_T1000E)
   // DC/DC converter on (MeshCore T1000eBoard power profile).
   uint8_t sd_enabled = 0;
   sd_softdevice_is_enabled(&sd_enabled);
@@ -230,7 +230,7 @@ void setup() {
   g_uptime.set_boot_count(g_settings_store->load_boot_count() + 1);
   g_settings_store->save_boot_count(g_uptime.boot_count());
 
-#if defined(MESHPGEON_RADIO_LR1110)
+#if defined(MESHPIGEON_RADIO_LR1110)
   g_radio = new Lr1110Radio();
 #else
   g_radio = new Sx1262Radio();
@@ -239,7 +239,7 @@ void setup() {
                                      *g_radio, kBoardName, kFwVersion);
   g_processor->set_hooks(&g_hooks);
   g_processor->add_sink(&g_usb);
-#ifdef MESHPGEON_ESP32
+#ifdef MESHPIGEON_ESP32
   g_ble.begin(*g_processor, kBleName);
 #endif
 

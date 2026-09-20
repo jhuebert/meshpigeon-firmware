@@ -1,5 +1,5 @@
-#ifndef MESHPGEON_COMMAND_PROCESSOR_H
-#define MESHPGEON_COMMAND_PROCESSOR_H
+#ifndef MESHPIGEON_COMMAND_PROCESSOR_H
+#define MESHPIGEON_COMMAND_PROCESSOR_H
 
 #include <stddef.h>
 #include <stdint.h>
@@ -115,4 +115,4 @@ class CommandProcessor {
 
 }  // namespace meshpigeon
 
-#endif  // MESHPGEON_COMMAND_PROCESSOR_H
+#endif  // MESHPIGEON_COMMAND_PROCESSOR_H

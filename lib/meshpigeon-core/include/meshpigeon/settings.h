@@ -1,5 +1,5 @@
-#ifndef MESHPGEON_SETTINGS_H
-#define MESHPGEON_SETTINGS_H
+#ifndef MESHPIGEON_SETTINGS_H
+#define MESHPIGEON_SETTINGS_H
 
 #include <stddef.h>
 #include <stdint.h>
@@ -76,4 +76,4 @@ class MemorySettingsStore : public SettingsStore {
 
 }  // namespace meshpigeon
 
-#endif  // MESHPGEON_SETTINGS_H
+#endif  // MESHPIGEON_SETTINGS_H

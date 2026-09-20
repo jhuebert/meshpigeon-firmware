@@ -1,9 +1,9 @@
-#ifndef MESHPGEON_TRANSPORTS_H
-#define MESHPGEON_TRANSPORTS_H
+#ifndef MESHPIGEON_TRANSPORTS_H
+#define MESHPIGEON_TRANSPORTS_H
 
 #include <Arduino.h>
 
-#if defined(MESHPGEON_ESP32)
+#if defined(MESHPIGEON_ESP32)
 #include <NimBLEDevice.h>
 #endif
 
@@ -47,7 +47,7 @@ class UsbCdcSink : public IFrameSink {
   uint8_t frame_[FRAME_MAX_DECODED];
 };
 
-#if defined(MESHPGEON_ESP32)
+#if defined(MESHPIGEON_ESP32)
 
 static const BLEUUID kNusServiceUUID("6E400001-B5A3-F393-E0A9-E50E24DCCA9E");
 static const BLEUUID kNusWriteCharUUID("6E400002-B5A3-F393-E0A9-E50E24DCCA9E");
@@ -146,8 +146,8 @@ class BleSink : public IFrameSink, public NimBLEServerCallbacks,
   std::vector<PerConn> conns_state_;
 };
 
-#endif  // MESHPGEON_ESP32
+#endif  // MESHPIGEON_ESP32
 
 }  // namespace meshpigeon
 
-#endif  // MESHPGEON_TRANSPORTS_H
+#endif  // MESHPIGEON_TRANSPORTS_H

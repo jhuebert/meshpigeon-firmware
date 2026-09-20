@@ -72,7 +72,7 @@ void CommandProcessor::on_frame(uint8_t cmd, uint8_t nonce, uint8_t status,
       }
       uint8_t p[49];
       size_t i = 0;
-      p[i++] = MESHPGEON_PROTOCOL_VERSION;
+      p[i++] = MESHPIGEON_PROTOCOL_VERSION;
       p[i++] = 0;  // fw version major (kept in fw_version_ string too)
       p[i++] = 1;  // fw version minor
       memset(&p[i], 0, 16);
@@ -145,7 +145,7 @@ void CommandProcessor::on_frame(uint8_t cmd, uint8_t nonce, uint8_t status,
     }
 
     case CMD_SEND_PACKET: {
-      if (len < 1 || len > 1 + MESHPGEON_MAX_RAW_PACKET ||
+      if (len < 1 || len > 1 + MESHPIGEON_MAX_RAW_PACKET ||
           payload[0] != len - 1) {
         respond(from, cmd, nonce, STATUS_ERR_BAD_PAYLOAD, NULL, 0);
         return;
@@ -177,7 +177,7 @@ void CommandProcessor::on_frame(uint8_t cmd, uint8_t nonce, uint8_t status,
       uint32_t since = (uint32_t)payload[0] | ((uint32_t)payload[1] << 8) |
                        ((uint32_t)payload[2] << 16) | ((uint32_t)payload[3] << 24);
       uint32_t max_count = (uint32_t)payload[4] | ((uint32_t)payload[5] << 8);
-      uint8_t entry[3 + kStoredPacketOverhead + MESHPGEON_MAX_RAW_PACKET + 2];
+      uint8_t entry[3 + kStoredPacketOverhead + MESHPIGEON_MAX_RAW_PACKET + 2];
       uint32_t delivered = 0;
       store_.fetch_since(since, max_count, [&](const StoredPacket& e) {
         size_t i = 0;
@@ -195,7 +195,7 @@ void CommandProcessor::on_frame(uint8_t cmd, uint8_t nonce, uint8_t status,
         entry[i++] = e.len;
         memcpy(&entry[i], e.raw, e.len);
         i += e.len;
-        uint8_t frame[3 + kStoredPacketOverhead + MESHPGEON_MAX_RAW_PACKET + 2];
+        uint8_t frame[3 + kStoredPacketOverhead + MESHPIGEON_MAX_RAW_PACKET + 2];
         size_t fl = frame_build(frame, CMD_RX_PACKET, nonce, 0, entry, i);
         from->send_frame(frame, fl);
         delivered++;
@@ -231,11 +231,11 @@ void CommandProcessor::on_frame(uint8_t cmd, uint8_t nonce, uint8_t status,
 
 uint32_t CommandProcessor::on_packet_received(int8_t rssi, int8_t snr,
                                               const uint8_t* raw, uint8_t len) {
-  if (len > MESHPGEON_MAX_RAW_PACKET) len = MESHPGEON_MAX_RAW_PACKET;
+  if (len > MESHPIGEON_MAX_RAW_PACKET) len = MESHPIGEON_MAX_RAW_PACKET;
   uint32_t seq = store_.append(clock_.uptime_ms(), rssi, snr, kFlagsReceived,
                                raw, len);
   // Live push while connected (04 §4), same entry layout as fetch replay.
-  uint8_t entry[kStoredPacketOverhead + MESHPGEON_MAX_RAW_PACKET];
+  uint8_t entry[kStoredPacketOverhead + MESHPIGEON_MAX_RAW_PACKET];
   size_t i = 0;
   entry[i++] = (uint8_t)(seq & 0xFF);
   entry[i++] = (uint8_t)((seq >> 8) & 0xFF);
@@ -252,7 +252,7 @@ uint32_t CommandProcessor::on_packet_received(int8_t rssi, int8_t snr,
   entry[i++] = len;
   memcpy(&entry[i], raw, len);
   i += len;
-  uint8_t frame[3 + kStoredPacketOverhead + MESHPGEON_MAX_RAW_PACKET + 2];
+  uint8_t frame[3 + kStoredPacketOverhead + MESHPIGEON_MAX_RAW_PACKET + 2];
   size_t fl = frame_build(frame, CMD_RX_PACKET, 0, 0, entry, i);
   broadcast(frame, fl, NULL);
   return seq;

@@ -1,5 +1,5 @@
-#ifndef MESHPGEON_FRAMING_H
-#define MESHPGEON_FRAMING_H
+#ifndef MESHPIGEON_FRAMING_H
+#define MESHPIGEON_FRAMING_H
 
 #include <stddef.h>
 #include <stdint.h>
@@ -23,7 +23,7 @@ namespace meshpigeon {
  */
 
 // Max bytes a decoded frame can occupy (cmd+nonce+status+payload+crc16).
-#define FRAME_MAX_DECODED (3 + MESHPGEON_MAX_FRAME_PAYLOAD + 2)
+#define FRAME_MAX_DECODED (3 + MESHPIGEON_MAX_FRAME_PAYLOAD + 2)
 // COBS worst case adds one overhead byte per 254 plus terminator.
 #define FRAME_MAX_WIRE (FRAME_MAX_DECODED + (FRAME_MAX_DECODED + 253) / 254 + 1)
 
@@ -88,4 +88,4 @@ class FrameReader {
 
 }  // namespace meshpigeon
 
-#endif  // MESHPGEON_FRAMING_H
+#endif  // MESHPIGEON_FRAMING_H

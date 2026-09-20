@@ -1,5 +1,5 @@
-#ifndef MESHPGEON_PROTOCOL_H
-#define MESHPGEON_PROTOCOL_H
+#ifndef MESHPIGEON_PROTOCOL_H
+#define MESHPIGEON_PROTOCOL_H
 
 /**
  * MeshPigeon radio-protocol constants — the public contract documented in
@@ -10,7 +10,7 @@
  * reboots, remember history.
  */
 
-#define MESHPGEON_PROTOCOL_VERSION  1
+#define MESHPIGEON_PROTOCOL_VERSION  1
 
 // ---- Command codes -------------------------------------------------------
 // Host -> radio commands (request/response).
@@ -39,7 +39,7 @@
 #define STATUS_ERR_NO_RADIO     0x06
 
 // ---- Limits (from the plan, 04-firmware §1) ------------------------------
-#define MESHPGEON_MAX_RAW_PACKET    200   // raw OTA bytes we keep per entry
-#define MESHPGEON_MAX_FRAME_PAYLOAD 220   // biggest payload we'll accept in a frame
+#define MESHPIGEON_MAX_RAW_PACKET    200   // raw OTA bytes we keep per entry
+#define MESHPIGEON_MAX_FRAME_PAYLOAD 220   // biggest payload we'll accept in a frame
 
-#endif  // MESHPGEON_PROTOCOL_H
+#endif  // MESHPIGEON_PROTOCOL_H

@@ -343,9 +343,9 @@ void test_store_wraps_tail_to_front() {
 
 void test_store_oversize_packet_never_fits() {
   PacketStore s(64);  // smaller than 12 + 200
-  uint8_t big[MESHPGEON_MAX_RAW_PACKET];
+  uint8_t big[MESHPIGEON_MAX_RAW_PACKET];
   memset(big, 0x77, sizeof(big));
-  TEST_ASSERT_EQUAL(0, s.append(0, -70, 9, 0x02, big, MESHPGEON_MAX_RAW_PACKET));
+  TEST_ASSERT_EQUAL(0, s.append(0, -70, 9, 0x02, big, MESHPIGEON_MAX_RAW_PACKET));
   TEST_ASSERT_EQUAL(0, s.count());
   TEST_ASSERT_EQUAL(1, s.dropped());
   TEST_ASSERT_EQUAL(1, s.next_seq());  // no seq consumed by the drop
@@ -353,15 +353,15 @@ void test_store_oversize_packet_never_fits() {
 }
 
 void test_store_max_size_packet_roundtrip() {
-  PacketStore s(12 + MESHPGEON_MAX_RAW_PACKET);
-  uint8_t big[MESHPGEON_MAX_RAW_PACKET];
-  for (int i = 0; i < MESHPGEON_MAX_RAW_PACKET; i++) big[i] = (uint8_t)i;
-  uint32_t sq = s.append(1234, -100, -5, 0x01, big, MESHPGEON_MAX_RAW_PACKET);
+  PacketStore s(12 + MESHPIGEON_MAX_RAW_PACKET);
+  uint8_t big[MESHPIGEON_MAX_RAW_PACKET];
+  for (int i = 0; i < MESHPIGEON_MAX_RAW_PACKET; i++) big[i] = (uint8_t)i;
+  uint32_t sq = s.append(1234, -100, -5, 0x01, big, MESHPIGEON_MAX_RAW_PACKET);
   TEST_ASSERT_EQUAL(1, sq);
   StoredPacket e;
   TEST_ASSERT_TRUE(s.get(sq, &e));
-  TEST_ASSERT_EQUAL(MESHPGEON_MAX_RAW_PACKET, e.len);
-  TEST_ASSERT_EQUAL_MEMORY(big, e.raw, MESHPGEON_MAX_RAW_PACKET);
+  TEST_ASSERT_EQUAL(MESHPIGEON_MAX_RAW_PACKET, e.len);
+  TEST_ASSERT_EQUAL_MEMORY(big, e.raw, MESHPIGEON_MAX_RAW_PACKET);
   TEST_ASSERT_EQUAL(-100, e.rssi);
   TEST_ASSERT_EQUAL(1234, e.uptime_ms);
 }
@@ -401,13 +401,13 @@ void test_store_randomized_matches_model() {
   // Deterministic PRNG stress: compare against a simple reference model.
   PacketStore s(100);
   std::vector<uint32_t> seqs;   // model: retained seqs, oldest first
-  uint8_t payload[MESHPGEON_MAX_RAW_PACKET];
+  uint8_t payload[MESHPIGEON_MAX_RAW_PACKET];
   for (int i = 0; i < (int)sizeof(payload); i++) payload[i] = (uint8_t)(i * 7);
   uint64_t rng = 0x12345678;
 
   for (int op = 0; op < 5000; op++) {
     rng = rng * 6364136223846793005ULL + 1442695040888963407ULL;
-    uint8_t len = (uint8_t)(1 + (rng >> 33) % MESHPGEON_MAX_RAW_PACKET);
+    uint8_t len = (uint8_t)(1 + (rng >> 33) % MESHPIGEON_MAX_RAW_PACKET);
     uint32_t sq = s.append(0, -70, 9, 0x02, payload, len);
     if (sq != 0) seqs.push_back(sq);
     // evict from the model while it exceeds what the store can hold
@@ -669,7 +669,7 @@ void test_get_info_shape() {
   proc->on_frame(CMD_GET_INFO, 0x66, 0, nullptr, 0, sink);
   TEST_ASSERT_EQUAL(STATUS_OK, sink->status(0));
   TEST_ASSERT_EQUAL(49, sink->payload_len(0));
-  TEST_ASSERT_EQUAL(MESHPGEON_PROTOCOL_VERSION, sink->payload(0)[0]);
+  TEST_ASSERT_EQUAL(MESHPIGEON_PROTOCOL_VERSION, sink->payload(0)[0]);
   TEST_ASSERT_EQUAL_MEMORY("TEST", sink->payload(0) + 3, 4);
 }
 

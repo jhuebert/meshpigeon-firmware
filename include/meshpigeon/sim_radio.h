@@ -1,5 +1,5 @@
-#ifndef MESHPGEON_SIM_RADIO_H
-#define MESHPGEON_SIM_RADIO_H
+#ifndef MESHPIGEON_SIM_RADIO_H
+#define MESHPIGEON_SIM_RADIO_H
 
 #include <cstdlib>
 #include <cstring>
@@ -70,7 +70,7 @@ class SimRadio : public ILoRaRadio {
  private:
   struct AirPacket {
     uint8_t len;
-    uint8_t data[MESHPGEON_MAX_RAW_PACKET];
+    uint8_t data[MESHPIGEON_MAX_RAW_PACKET];
     AirPacket(const uint8_t* d, uint8_t l) : len(l) { memcpy(data, d, l); }
   };
 
@@ -87,7 +87,7 @@ class SimRadio : public ILoRaRadio {
   uint8_t loss_pct_ = 0;
   uint8_t dup_pct_ = 0;
   RadioSettings applied_{};
-  uint8_t last_tx_[MESHPGEON_MAX_RAW_PACKET];
+  uint8_t last_tx_[MESHPIGEON_MAX_RAW_PACKET];
   uint8_t last_tx_len_ = 0;
   int tx_count_ = 0;
   bool tx_active_ = false;
@@ -97,4 +97,4 @@ class SimRadio : public ILoRaRadio {
 
 }  // namespace meshpigeon
 
-#endif  // MESHPGEON_SIM_RADIO_H
+#endif  // MESHPIGEON_SIM_RADIO_H

@@ -1,5 +1,5 @@
-#ifndef MESHPGEON_UPTIME_CLOCK_H
-#define MESHPGEON_UPTIME_CLOCK_H
+#ifndef MESHPIGEON_UPTIME_CLOCK_H
+#define MESHPIGEON_UPTIME_CLOCK_H
 
 #include <stdint.h>
 
@@ -45,4 +45,4 @@ class ManualClock : public IMillisecondClock {
 
 }  // namespace meshpigeon
 
-#endif  // MESHPGEON_UPTIME_CLOCK_H
+#endif  // MESHPIGEON_UPTIME_CLOCK_H

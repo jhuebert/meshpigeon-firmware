@@ -1,5 +1,5 @@
-#ifndef MESHPGEON_PACKET_STORE_H
-#define MESHPGEON_PACKET_STORE_H
+#ifndef MESHPIGEON_PACKET_STORE_H
+#define MESHPIGEON_PACKET_STORE_H
 
 #include <stddef.h>
 #include <stdint.h>
@@ -23,7 +23,7 @@ struct StoredPacket {
   int8_t snr;
   uint8_t flags;  // 0x01 = sent by us (TX), 0x02 = received
   uint8_t len;
-  uint8_t raw[MESHPGEON_MAX_RAW_PACKET];
+  uint8_t raw[MESHPIGEON_MAX_RAW_PACKET];
 };
 
 // seq + uptime + rssi + snr + len + flags
@@ -148,4 +148,4 @@ class PacketStore {
 
 }  // namespace meshpigeon
 
-#endif  // MESHPGEON_PACKET_STORE_H
+#endif  // MESHPIGEON_PACKET_STORE_H
