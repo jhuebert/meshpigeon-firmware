@@ -27,8 +27,8 @@ logic** — all of that lives in the [MeshPigeon app](https://github.com/jhueber
 |---|---|---|---|
 | Seeed XIAO ESP32-S3 + Wio-SX1262 | ESP32-S3 | SX1262 | USB CDC + BLE |
 | Heltec WiFi LoRa 32 V3 | ESP32-S3 | SX1262 | USB CDC + BLE |
-| Seeed SenseCAP T114 | nRF52840 | SX1262 | USB CDC (BLE lands with first bench bring-up) |
-| Seeed Tracker T1000-E | nRF52840 | LR1110 | USB CDC (BLE lands with first bench bring-up) |
+| Seeed SenseCAP T114 | nRF52840 | SX1262 | USB CDC + BLE |
+| Seeed Tracker T1000-E | nRF52840 | LR1110 | USB CDC + BLE |
 
 Build a board:
 

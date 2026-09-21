@@ -5,6 +5,8 @@
 
 #if defined(MESHPIGEON_ESP32)
 #include <NimBLEDevice.h>
+#elif defined(MESHPIGEON_NRF52)
+#include <bluefruit.h>
 #endif
 
 #include "meshpigeon/command_processor.h"
@@ -61,9 +63,17 @@ static const BLEUUID kNusNotifyCharUUID("6E400003-B5A3-F393-E0A9-E50E24DCCA9E");
 class BleSink : public IFrameSink, public NimBLEServerCallbacks,
                 public NimBLECharacteristicCallbacks {
  public:
-  void begin(CommandProcessor& proc, const char* device_name) {
+  void begin(CommandProcessor& proc, const char* base_name) {
     proc_ = &proc;
-    NimBLEDevice::init(device_name);
+    NimBLEDevice::init(base_name);
+    // Distinguish multiple pigeons in scan lists: append the two low bytes of
+    // the BLE address ("MeshPigeon-A3F2"); nRF52 boards use the same scheme.
+    const NimBLEAddress addr = NimBLEDevice::getAddress();
+    const uint8_t* a = addr.getNative();  // little-endian: a[0] is the LSB
+    char device_name[24];
+    snprintf(device_name, sizeof(device_name), "%s-%02X%02X", base_name, a[1],
+             a[0]);
+    NimBLEDevice::setDeviceName(device_name);
     NimBLEDevice::setMTU(247);
     server_ = NimBLEDevice::createServer();
     server_->setCallbacks(this);
@@ -121,6 +131,9 @@ class BleSink : public IFrameSink, public NimBLEServerCallbacks,
     }
   }
 
+  /** Board loop: RX is callback-driven and TX immediate — nothing to do. */
+  void pump() {}
+
  private:
   struct PerConn {
     uint16_t handle = 0;
@@ -146,7 +159,152 @@ class BleSink : public IFrameSink, public NimBLEServerCallbacks,
   std::vector<PerConn> conns_state_;
 };
 
-#endif  // MESHPIGEON_ESP32
+#elif defined(MESHPIGEON_NRF52)
+
+static const uint8_t kAdvIntervalMin = 32;   // units: 0.625 ms (20 ms)
+static const uint8_t kAdvIntervalMax = 244;  // 152.5 ms (MeshCore-tested)
+static const uint16_t kAdvFastTimeout = 30;  // seconds
+
+/**
+ * BLE transport (Adafruit Bluefruit, Nordic-UART-Service-compatible so
+ * generic tools and the MeshPigeon app work unchanged). Single central (v1);
+ * no pairing — same security posture as the ESP32 sink.
+ *
+ * RX: bleuart's FIFO is filled from the BLE event context, drained here in
+ * the board loop. TX: notify's SoftDevice buffer is only a few packets deep,
+ * so frames queue (the app fetches history in 32-packet bursts) and drain as
+ * 20-byte chunks — one hvx packet per chunk, retrying in the board loop when
+ * the SoftDevice buffer is full. send_frame blocks (draining) only when the
+ * queue is full, which cannot deadlock: the SoftDevice drains in its own
+ * context, independent of this loop.
+ */
+class BleSink : public IFrameSink {
+ public:
+  void begin(CommandProcessor& proc, const char* base_name) {
+    proc_ = &proc;
+    self_ = this;
+    Bluefruit.configPrphBandwidth(BANDWIDTH_MAX);
+    Bluefruit.begin();
+    // Distinguish multiple pigeons in scan lists: append the two low bytes of
+    // the BLE address ("MeshPigeon-A3F2"); matches the ESP32 sink naming.
+    char device_name[24];
+    ble_gap_addr_t addr;
+    if (sd_ble_gap_addr_get(&addr) == NRF_SUCCESS) {
+      snprintf(device_name, sizeof(device_name), "%s-%02X%02X", base_name,
+               addr.addr[1], addr.addr[0]);
+    } else {
+      snprintf(device_name, sizeof(device_name), "%s", base_name);
+    }
+    Bluefruit.setName(device_name);
+    Bluefruit.Periph.setConnectCallback(on_connect);
+    Bluefruit.Periph.setDisconnectCallback(on_disconnect);
+    bleuart.begin();
+    Bluefruit.Advertising.addFlags(BLE_GAP_ADV_FLAGS_LE_ONLY_GENERAL_DISC_MODE);
+    Bluefruit.Advertising.addService(bleuart);
+    Bluefruit.ScanResponse.addName();
+    Bluefruit.Advertising.setInterval(kAdvIntervalMin, kAdvIntervalMax);
+    Bluefruit.Advertising.setFastTimeout(kAdvFastTimeout);
+    Bluefruit.Advertising.restartOnDisconnect(true);
+    Bluefruit.Advertising.start(0);
+    proc_->add_sink(this);
+  }
+
+  /** Board loop: drain BLE RX into frames, then TX queue into notifications. */
+  void pump() {
+    while (bleuart.available() > 0) {
+      size_t res = reader_.feed((uint8_t)bleuart.read(), frame_);
+      if (res != 0 && res != (size_t)-1) {
+        proc_->on_frame(frame_[0], frame_[1], frame_[2], frame_ + 3, res - 5,
+                        this);
+      }
+    }
+    if (drop_pending_) {
+      drop_pending_ = false;
+      head_ = 0;
+      count_ = 0;
+    }
+    drain_step();
+  }
+
+  // IFrameSink: enqueue for the board loop (never writes from a callback
+  // thread; blocks only on a full queue, see class comment).
+  void send_frame(const uint8_t* decoded, size_t len) override {
+    uint8_t wire[FRAME_MAX_WIRE];
+    size_t n = frame_encode_wire(wire, decoded, len);
+    while (count_ == kQueueDepth) drain_step_blocking();
+    Queued& q = queue_[(head_ + count_) % kQueueDepth];
+    memcpy(q.buf, wire, n);
+    q.len = n;
+    q.off = 0;
+    count_++;
+  }
+
+ private:
+  struct Queued {
+    size_t len;
+    size_t off;
+    uint8_t buf[FRAME_MAX_WIRE];
+  };
+
+  static const size_t kQueueDepth = 16;
+  static const size_t kChunk = 20;  // BLE default MTU (23) minus 3 overhead
+
+  static void on_connect(uint16_t) { if (self_) self_->connected_ = true; }
+  static void on_disconnect(uint16_t, uint8_t) {
+    if (!self_) return;
+    self_->connected_ = false;
+    // Drop TX frames for the lost client from the board loop, not here.
+    self_->drop_pending_ = true;
+  }
+
+  bool connected() const { return connected_ && Bluefruit.connected() > 0; }
+
+  /** Write what the SoftDevice accepts now; true if anything drained. */
+  bool drain_step() {
+    if (!connected() || count_ == 0) return false;
+    Queued& q = queue_[head_];
+    size_t chunk = min(q.len - q.off, kChunk);
+    size_t written = bleuart.write(q.buf + q.off, chunk);
+    if (written == 0) return false;
+    q.off += written;
+    if (q.off == q.len) {
+      head_ = (head_ + 1) % kQueueDepth;
+      count_--;
+    }
+    return true;
+  }
+
+  void drain_step_blocking() {
+    while (count_ > 0 && !drain_step()) {
+      if (!connected()) {
+        // Frames for a lost client are useless — drop and stop waiting.
+        head_ = 0;
+        count_ = 0;
+        return;
+      }
+      delay(1);
+    }
+  }
+
+  static BleSink* self_;
+
+  CommandProcessor* proc_ = nullptr;
+  // 512 B: two max wire frames — the app streams frames as 20-byte chunks
+  // faster than the 1 ms board loop drains, and BLEUart's default FIFO (256 B)
+  // would silently overflow mid-frame.
+  BLEUart bleuart{512};
+  FrameReader reader_;
+  uint8_t frame_[FRAME_MAX_DECODED];
+  Queued queue_[kQueueDepth];
+  size_t head_ = 0;
+  size_t count_ = 0;
+  volatile bool connected_ = false;
+  volatile bool drop_pending_ = false;
+};
+
+BleSink* BleSink::self_ = nullptr;
+
+#endif  // MESHPIGEON_ESP32 / MESHPIGEON_NRF52
 
 }  // namespace meshpigeon
 

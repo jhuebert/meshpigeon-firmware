@@ -19,10 +19,12 @@ cannot understand (and vice versa: unknown protocol version → refuse).
 | Transport | Bearer | Notes |
 |---|---|---|
 | USB CDC | virtual COM / serial | 115200 8N1 (line coding ignored); the primary bench/debug path |
-| BLE | Nordic UART Service (`6E400001-B5A3-F393-E0A9-E50E24DCCA9E`) | write-to-device char `6E400002-…`, notify-from-device char `6E400003-…`; multiple centrals supported (v1 target: ≥ 3) |
+| BLE | Nordic UART Service (`6E400001-B5A3-F393-E0A9-E50E24DCCA9E`) | write-to-device char `6E400002-…`, notify-from-device char `6E400003-…`; multiple centrals on ESP32 (v1 target: ≥ 3), single central on nRF52 |
 | Wi-Fi TCP | raw TCP server | planned for ESP32 Wi-Fi boards (stretch) |
 
 BLE notify chunks frames at ≤ 20 bytes so pre-MTU-exchange clients work.
+Devices advertise as `MeshPigeon-XXXX` where `XXXX` is the BLE address's two
+low bytes in hex — two pigeons in range are distinguishable in scan lists.
 
 ## 2. Framing
 

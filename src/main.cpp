@@ -192,10 +192,7 @@ static Sx1262Radio* g_radio;
 #endif
 static CommandProcessor* g_processor;
 static UsbCdcSink g_usb;
-
-#ifdef MESHPIGEON_ESP32
-static BleSink g_ble;
-#endif
+static BleSink g_ble;  // transports.h defines the platform's BLE sink class
 
 class ArduinoMillis : public IMillisecondClock {
  public:
@@ -244,9 +241,7 @@ void setup() {
                                      *g_radio, kBoardName, kFwVersion);
   g_processor->set_hooks(&g_hooks);
   g_usb.begin(*g_processor);  // sets the back-pointer; add_sink() alone leaves proc_ null
-#ifdef MESHPIGEON_ESP32
   g_ble.begin(*g_processor, kBleName);
-#endif
 
   bool applied = g_radio->begin();
   if (applied) g_processor->boot();  // applies persisted settings
@@ -261,6 +256,7 @@ void setup() {
 
 void loop() {
   g_usb.pump();
+  g_ble.pump();
   radio_loop();
   delay(1);  // pace the loop; RX FIFO + IRQ tolerate this easily
 }
