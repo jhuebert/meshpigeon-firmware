@@ -1,9 +1,11 @@
+<p align="center"><img src="banner.png" width="480" alt="MeshPigeon logo"></p>
+
 # MeshPigeon Radio Firmware
 
 The dumbest possible durable radio: it receives LoRa packets into the largest
 memory it can hold, stamps each with uptime, keys up when told, and persists
 its radio settings across reboots. **No mesh protocol, no keys, no repeat
-logic** — all of that lives in the [MeshPigeon app](https://github.com/jhuebert/meshpigeon-app).
+logic** — all of that lives in the [MeshPigeon app](https://github.com/jhuebert/meshpigeon-android).
 
 ```
 ┌──────────────┐   BLE / USB CDC / TCP (raw frames)
