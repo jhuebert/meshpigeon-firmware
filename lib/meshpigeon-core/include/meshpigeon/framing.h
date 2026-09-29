@@ -25,8 +25,8 @@ namespace meshpigeon {
  *   (id = 0) use the same framing.
  */
 
-// Max bytes a decoded frame can occupy (payload + crc16).
-#define FRAME_MAX_DECODED (3 + MESHPIGEON_MAX_FRAME_PAYLOAD + 2)
+// Max bytes a decoded frame can occupy (envelope + crc16).
+#define FRAME_MAX_DECODED (MESHPIGEON_MAX_FRAME_PAYLOAD + 2)
 // COBS worst case adds one overhead byte per 254 plus terminator.
 #define FRAME_MAX_WIRE (FRAME_MAX_DECODED + (FRAME_MAX_DECODED + 253) / 254 + 1)
 
@@ -50,12 +50,12 @@ size_t cobs_decode(uint8_t* dst, const uint8_t* src, size_t src_len);
 uint16_t frame_crc(const uint8_t* frame, size_t frame_len);
 
 /**
- * Build a decoded frame (envelope payload + crc) into `out`. `out` must
- * hold payload_len + 2 bytes. Returns total decoded length. Boards send
- * through the envelope, so this is a convenience for tests and fixtures.
+ * Build a decoded frame (envelope + trailing CRC) into `out`. `out` must
+ * hold envelope_len + 2 bytes. Returns the total decoded length. The one
+ * place a CRC is appended to an envelope, so tests and fixtures cannot
+ * drift from what the transports put on the wire.
  */
-size_t frame_build(uint8_t* out, uint8_t cmd, uint8_t nonce, uint8_t status,
-                   const uint8_t* payload, size_t payload_len);
+size_t frame_build(uint8_t* out, const uint8_t* envelope, size_t envelope_len);
 
 /** Encode a decoded frame (payload + trailing CRC) to wire format.
  *  `out` must hold FRAME_MAX_WIRE. */

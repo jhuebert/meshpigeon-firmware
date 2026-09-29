@@ -17,6 +17,10 @@ using namespace meshpigeon;
 
 class FakeRadio : public ILoRaRadio {
  public:
+  bool begin() override {
+    begin_calls_++;
+    return begin_ok_;
+  }
   bool apply(const RadioSettings& s) override {
     applied_ = s;
     apply_calls_++;
@@ -61,10 +65,12 @@ class FakeRadio : public ILoRaRadio {
   }
 
   RadioSettings applied_{};
+  int begin_calls_ = 0;
   int apply_calls_ = 0;
   int tx_calls_ = 0;
   uint8_t last_tx_[MESHPIGEON_MAX_RAW_PACKET] = {0};
   uint8_t last_tx_len_ = 0;
+  bool begin_ok_ = true;
   bool apply_ok_ = true;
   bool tx_ok_ = true;
   bool tx_async_ = false;      // model an in-flight TX when true
@@ -99,8 +105,11 @@ class FakeHooks : public IBoardHooks {
   uint8_t wifi_tcp_clients() override { return wifi_tcp_clients_; }
   void fill_status(StatusMessage* status) override {
     status->wifi_state = status_wifi_state_;
-    strncpy(status->wifi_ssid, "testnet", sizeof(status->wifi_ssid) - 1);
-    status->wifi_ssid[sizeof(status->wifi_ssid) - 1] = 0;
+    if (status_wifi_state_ ==
+        meshpigeon_Status_WifiState_WIFI_STATE_CONNECTED) {
+      strncpy(status->wifi_ssid, "testnet", sizeof(status->wifi_ssid) - 1);
+      status->wifi_ssid[sizeof(status->wifi_ssid) - 1] = 0;
+    }
     const uint8_t ip[4] = {192, 168, 7, 9};
     memcpy(status->wifi_ipv4.bytes, ip, 4);
     status->wifi_ipv4.size = 4;
@@ -114,10 +123,18 @@ class FakeHooks : public IBoardHooks {
   bool wifi_supported() const override { return wifi_supported_; }
   pb_size_t fill_capabilities(meshpigeon_Capability* out,
                               pb_size_t max) override {
-    (void)max;
-    out[0] = meshpigeon_Capability_CAPABILITY_BLE;
-    out[1] = meshpigeon_Capability_CAPABILITY_USB_CDC;
-    return 2;
+    // Honour `max` exactly as a board hook must: a value that does not fit
+    // is neither written nor counted. Ignoring it hid a real bug where the
+    // core passed a zero capacity and every board advertised nothing.
+    const meshpigeon_Capability caps[] = {
+        meshpigeon_Capability_CAPABILITY_BLE,
+        meshpigeon_Capability_CAPABILITY_USB_CDC};
+    pb_size_t n = 0;
+    for (size_t i = 0; i < sizeof(caps) / sizeof(caps[0]); i++) {
+      if (n < max) out[n] = caps[i];
+      n++;
+    }
+    return n;
   }
 
   meshpigeon_Status_WifiState status_wifi_state_ =
@@ -267,8 +284,15 @@ void test_cobs_empty() {
 void test_frame_roundtrip_and_crc() {
   uint8_t payload[] = {0xDE, 0xAD, 0xBE, 0xEF};
   uint8_t built[16];
-  size_t n = frame_build(built, 0, 0, 0, payload, 4);  // v2: payload + crc
+  size_t n = frame_build(built, payload, 4);  // envelope + crc
   TEST_ASSERT_EQUAL(6, n);
+  // frame_encode_envelope must produce byte-identical output: it is the same
+  // function the transports use, so fixtures cannot drift from the wire.
+  uint8_t a[FRAME_MAX_WIRE], b[FRAME_MAX_WIRE];
+  size_t wa = frame_encode_envelope(a, payload, 4);
+  size_t wb = frame_encode_wire(b, built, n);
+  TEST_ASSERT_EQUAL(wa, wb);
+  TEST_ASSERT_EQUAL_MEMORY(a, b, wa);
   // Corrupt one byte -> frame_crc differs
   uint8_t copy[16];
   memcpy(copy, built, n);
@@ -280,7 +304,7 @@ void test_frame_roundtrip_and_crc() {
 void test_frame_reader_stream() {
   uint8_t payload[] = {1, 2, 3};
   uint8_t built[16];
-  size_t n = frame_build(built, 0, 0, 0, payload, 3);
+  size_t n = frame_build(built, payload, 3);
   uint8_t wire[FRAME_MAX_WIRE];
   size_t wl = frame_encode_wire(wire, built, n);
 
@@ -298,7 +322,7 @@ void test_frame_reader_stream() {
 
 void test_frame_reader_bad_crc_dropped() {
   uint8_t built[16];
-  size_t n = frame_build(built, 0, 0, 0, nullptr, 0);
+  size_t n = frame_build(built, nullptr, 0);
   built[0] ^= 0xFF;  // corrupt
   uint8_t wire[FRAME_MAX_WIRE];
   size_t wl = frame_encode_wire(wire, built, n);
@@ -311,7 +335,7 @@ void test_frame_reader_bad_crc_dropped() {
 
 void test_frame_reader_ignores_garbage_between_frames() {
   uint8_t built[16];
-  size_t n = frame_build(built, 0, 0, 0, nullptr, 0);
+  size_t n = frame_build(built, nullptr, 0);
   uint8_t wire[FRAME_MAX_WIRE];
   size_t wl = frame_encode_wire(wire, built, n);
 
@@ -620,6 +644,23 @@ void test_unknown_operation_errors() {
                     sink->at(0).error());
 }
 
+void test_sink_registry_is_bounded_and_shared() {
+  // The registry is one pool for every transport (docs/radio-protocol.md §3),
+  // so add_sink has to be able to say no: a transport that ignored the
+  // result would broadcast into the void.
+  RecordingSink extra[8];
+  size_t accepted = 0;
+  for (size_t i = 0; i < 8; i++) {
+    if (proc->add_sink(&extra[i])) accepted++;
+  }
+  TEST_ASSERT_EQUAL(5, accepted);  // one was taken by setUp()'s sink
+  TEST_ASSERT_EQUAL(0, proc->sink_free());
+  for (size_t i = 0; i < 5; i++) {
+    proc->remove_sink(&extra[i]);
+  }
+  TEST_ASSERT_EQUAL(1, proc->sink_count());
+}
+
 void test_malformed_or_unidentified_envelope_dropped() {
   uint8_t garbage[] = {0xFF, 0xFF, 0xFF, 0xFF};
   proc->on_envelope(garbage, sizeof(garbage), sink);
@@ -708,6 +749,23 @@ void test_set_radio_bad_payload() {
   send(req, sink);
   TEST_ASSERT_EQUAL(meshpigeon_Error_ErrorCode_ERROR_CODE_BAD_PAYLOAD,
                     sink->at(0).error());
+  // So is a bandwidth that is not a whole 10 Hz step: the internal field is
+  // in 0.01 kHz, so converting first wrapped 655370 Hz into 10 Hz and
+  // "accepted" it.
+  sink->clear();
+  req.id = 3;
+  m.sf = 9;
+  m.bandwidth_hz = 125005;
+  send(req, sink);
+  TEST_ASSERT_EQUAL(meshpigeon_Error_ErrorCode_ERROR_CODE_BAD_PAYLOAD,
+                    sink->at(0).error());
+  sink->clear();
+  req.id = 4;
+  m.bandwidth_hz = 655370;  // /10 == 65537, which wraps the uint16 field
+  send(req, sink);
+  TEST_ASSERT_EQUAL(meshpigeon_Error_ErrorCode_ERROR_CODE_BAD_PAYLOAD,
+                    sink->at(0).error());
+  TEST_ASSERT_EQUAL(12500, proc->settings().bw_x100khz);  // default kept
 }
 
 void test_set_radio_apply_failure_is_tx_failed() {
@@ -892,6 +950,51 @@ void test_fetch_packets_since_cursor_skips_old() {
   TEST_ASSERT_EQUAL(2, sink->at(0).m().body.packet_entry.seq);
 }
 
+void test_fetch_packets_is_capped_per_request() {
+  // One handler call streams straight out of the sink, so an unbounded
+  // max_count would let a client hold the board loop (and a BLE queue) for
+  // as long as the store is deep. The cap is visible as a short FetchEnd
+  // and the client resumes from the last seq it got.
+  const uint8_t pkt[] = {0x45};
+  for (int i = 0; i < 200; i++) proc->on_packet_received(-80, 10, pkt, 1);
+
+  ClientToRadioMessage req = request(1);
+  req.which_body = kOpFetchPackets;
+  req.body.fetch_packets.since_seq = 0;
+  req.body.fetch_packets.max_count = 0xFFFFFFFF;
+  sink->clear();
+  send(req, sink);
+
+  // 200 entries + one FetchEnd, and the stream stopped short of all 200.
+  TEST_ASSERT_LESS_THAN(200, sink->count());
+  TEST_ASSERT_EQUAL(meshpigeon_RadioToClient_fetch_end_tag,
+                    sink->at((int)sink->count() - 1).which());
+  uint32_t delivered =
+      sink->at((int)sink->count() - 1).m().body.fetch_end.count;
+  TEST_ASSERT_LESS_THAN(200, delivered);
+  TEST_ASSERT_EQUAL(0, sink->undecoded());
+
+  // Resuming from the last seq continues where it stopped; the client keeps
+  // re-issuing until FetchEnd delivers nothing.
+  uint32_t last = 0;
+  uint32_t total = 0;
+  for (int round = 0; round < 10; round++) {
+    sink->clear();
+    req.id = (uint32_t)(2 + round);
+    req.body.fetch_packets.since_seq = last;
+    send(req, sink);
+    uint32_t delivered =
+        sink->at((int)sink->count() - 1).m().body.fetch_end.count;
+    if (delivered == 0) break;
+    // Contiguous: every round picks up at exactly the seq after the last.
+    TEST_ASSERT_EQUAL(last + 1, sink->at(0).m().body.packet_entry.seq);
+    last = sink->at((int)delivered - 1).m().body.packet_entry.seq;
+    total += delivered;
+  }
+  TEST_ASSERT_EQUAL(200, total);
+  TEST_ASSERT_EQUAL(0, sink->undecoded());
+}
+
 void test_rx_packet_pushes_to_all_sinks() {
   const uint8_t pkt[] = {0x45, 0x07, 0x08};
   RecordingSink a, b;
@@ -934,6 +1037,8 @@ void test_device_info() {
   TEST_ASSERT_EQUAL(MESHPIGEON_SPEC_VERSION, m.spec_version);
   TEST_ASSERT_EQUAL_STRING("TEST", m.board_name);
   TEST_ASSERT_EQUAL_STRING("0.1", m.fw_version);
+  // The hook is asked for kMaxCapabilities slots, not zero: a board that
+  // reported nothing here would take its Wi-Fi fields with it.
   TEST_ASSERT_EQUAL(2, m.capabilities_count);
   TEST_ASSERT_EQUAL(meshpigeon_Capability_CAPABILITY_BLE, m.capabilities[0]);
   TEST_ASSERT_EQUAL(meshpigeon_Capability_CAPABILITY_USB_CDC, m.capabilities[1]);
@@ -964,6 +1069,63 @@ void test_device_info_radio_failure() {
   req.which_body = kOpGetDeviceInfo;
   send(req, sink);
   TEST_ASSERT_FALSE(sink->at(0).m().body.device_info.radio_ok);
+  // A radio that never came up still loads its settings, so the app can
+  // name the node and unlock it.
+  TEST_ASSERT_TRUE(proc->device_settings().pin_is_default());
+  TEST_ASSERT_EQUAL(MESHPIGEON_WIFI_PORT_DEFAULT,
+                    proc->device_settings().wifi_port);
+}
+
+void test_boot_reports_a_dead_radio_and_still_loads_settings() {
+  // The board port's begin() failing must not stop the core from booting:
+  // radio_ok goes false, the stored settings are still in RAM, and sending
+  // is refused instead of being silently "accepted".
+  sstore->save_device([] {
+    DeviceSettings d = DeviceSettings::defaults();
+    strcpy(d.name, "shelf-pigeon");
+    return d;
+  }());
+  radio->begin_ok_ = false;
+  TEST_ASSERT_FALSE(proc->boot());
+  TEST_ASSERT_FALSE(proc->radio_ok());
+  TEST_ASSERT_EQUAL_STRING("shelf-pigeon", proc->device_settings().name);
+
+  sink->clear();
+  ClientToRadioMessage req = request(1);
+  req.which_body = kOpGetDeviceInfo;
+  send(req, sink);
+  TEST_ASSERT_FALSE(sink->at(0).m().body.device_info.radio_ok);
+
+  sink->clear();
+  ClientToRadioMessage tx = request(2);
+  tx.which_body = kOpSendPacket;
+  tx.body.send_packet.raw.size = 1;
+  tx.body.send_packet.raw.bytes[0] = 0x45;
+  send(tx, sink);
+  TEST_ASSERT_EQUAL(meshpigeon_Error_ErrorCode_ERROR_CODE_NO_RADIO,
+                    sink->at(0).error());
+  // Nothing was stored and nothing was keyed up: no TxResult lies either.
+  TEST_ASSERT_EQUAL(0, store->count());
+  TEST_ASSERT_EQUAL(0, radio->tx_calls_);
+  TEST_ASSERT_EQUAL(0, sink->count() - 1);
+}
+
+void test_send_packet_survives_a_failed_apply() {
+  // radio_ok is the gate on SendPacket, so a rejected re-tune has to clear
+  // it: a later send must not report success for a radio that is not there.
+  radio->apply_ok_ = false;
+  proc->boot();
+  TEST_ASSERT_FALSE(proc->radio_ok());
+  radio->apply_ok_ = true;
+
+  sink->clear();
+  ClientToRadioMessage tx = request(1);
+  tx.which_body = kOpSendPacket;
+  tx.body.send_packet.raw.size = 1;
+  tx.body.send_packet.raw.bytes[0] = 0x45;
+  send(tx, sink);
+  TEST_ASSERT_EQUAL(meshpigeon_Error_ErrorCode_ERROR_CODE_NO_RADIO,
+                    sink->at(0).error());
 }
 
 /** Set a PIN on the fixture and return a fresh, locked-down client sink. */
@@ -1072,6 +1234,169 @@ void test_set_device_settings_is_atomic() {
   TEST_ASSERT_EQUAL(0, proc->device_settings().name[0]);  // nothing applied
   TEST_ASSERT_TRUE(proc->device_settings().pin_is_default());
   TEST_ASSERT_EQUAL(0, hooks->name_calls_);
+}
+
+void test_empty_pin_restores_the_factory_default() {
+  // device.proto: "Empty string restores the default; absent = unchanged."
+  lock_with_pin("1234");
+  TEST_ASSERT_FALSE(proc->device_settings().pin_is_default());
+  ClientToRadioMessage auth = request(90);
+  auth.which_body = kOpAuth;
+  set_str(auth.body.auth.pin, sizeof(auth.body.auth.pin), "1234");
+  send(auth, sink);
+  sink->clear();
+
+  // absent => unchanged
+  ClientToRadioMessage rename = request(1);
+  rename.which_body = kOpSetDeviceSettings;
+  rename.body.set_device_settings.has_name = true;
+  set_str(rename.body.set_device_settings.name,
+          sizeof(rename.body.set_device_settings.name), "kept");
+  send(rename, sink);
+  TEST_ASSERT_FALSE(proc->device_settings().pin_is_default());
+
+  // empty => back to "0000", which also re-opens the device
+  sink->clear();
+  ClientToRadioMessage req = request(2);
+  req.which_body = kOpSetDeviceSettings;
+  req.body.set_device_settings.has_pin = true;
+  set_str(req.body.set_device_settings.pin,
+          sizeof(req.body.set_device_settings.pin), "");
+  send(req, sink);
+  TEST_ASSERT_EQUAL(meshpigeon_RadioToClient_device_settings_tag,
+                    sink->at(0).which());
+  TEST_ASSERT_TRUE(proc->device_settings().pin_is_default());
+  DeviceSettings loaded;
+  TEST_ASSERT_TRUE(sstore->load_device(&loaded));
+  TEST_ASSERT_TRUE(loaded.pin_is_default());
+}
+
+void test_device_settings_push_reaches_only_authorized_clients() {
+  // The read model carries the Wi-Fi passphrase, so the async change push
+  // must not be a free-for-all: a socket that merely attached would
+  // otherwise collect the password from every rename.
+  ClientToRadioMessage set = request(1);
+  set.which_body = kOpSetDeviceSettings;
+  set.body.set_device_settings.has_wifi_ssid = true;
+  set_str(set.body.set_device_settings.wifi_ssid,
+          sizeof(set.body.set_device_settings.wifi_ssid), "home-net");
+  set.body.set_device_settings.has_wifi_password = true;
+  set_str(set.body.set_device_settings.wifi_password,
+          sizeof(set.body.set_device_settings.wifi_password), "hunter2");
+  send(set, sink);
+  proc->remove_sink(sink);  // the issuer goes away
+
+  // A locked device: an unauthenticated socket hears nothing.
+  lock_with_pin("1234");
+  ClientToRadioMessage auth = request(90);
+  auth.which_body = kOpAuth;
+  set_str(auth.body.auth.pin, sizeof(auth.body.auth.pin), "1234");
+  send(auth, sink);  // the writer is inside; the stranger is not
+  sink->clear();
+
+  RecordingSink stranger;
+  proc->add_sink(&stranger);
+  ClientToRadioMessage rename = request(2);
+  rename.which_body = kOpSetDeviceSettings;
+  rename.body.set_device_settings.has_name = true;
+  set_str(rename.body.set_device_settings.name,
+          sizeof(rename.body.set_device_settings.name), "still-here");
+  send(rename, sink);
+  TEST_ASSERT_EQUAL(0, stranger.count());
+
+  // Once it authenticates, the same client is in the loop again.
+  ClientToRadioMessage stranger_auth = request(3);
+  stranger_auth.which_body = kOpAuth;
+  set_str(stranger_auth.body.auth.pin, sizeof(stranger_auth.body.auth.pin),
+          "1234");
+  send(stranger_auth, &stranger);
+  stranger.clear();
+  rename.id = 4;
+  send(rename, sink);
+  TEST_ASSERT_EQUAL(1, stranger.count());
+  TEST_ASSERT_EQUAL_STRING("hunter2",
+                           stranger.at(0).m().body.device_settings.wifi_password);
+  proc->remove_sink(&stranger);
+  proc->add_sink(sink);
+}
+
+void test_changing_the_pin_re_gates_other_connections() {
+  lock_with_pin("1234");
+  RecordingSink peer;
+  proc->add_sink(&peer);
+  ClientToRadioMessage auth = request(1);
+  auth.which_body = kOpAuth;
+  set_str(auth.body.auth.pin, sizeof(auth.body.auth.pin), "1234");
+  send(auth, sink);   // the holder
+  send(auth, &peer);  // ...and a peer that knew the old PIN
+
+  ClientToRadioMessage req = request(2);
+  req.which_body = kOpSetDeviceSettings;
+  req.body.set_device_settings.has_pin = true;
+  set_str(req.body.set_device_settings.pin,
+          sizeof(req.body.set_device_settings.pin), "5555");
+  send(req, sink);
+
+  // The peer knew the old PIN, so it is no longer entitled to the node; the
+  // issuer keeps its session (it made the change).
+  peer.clear();
+  ClientToRadioMessage get = request(3);
+  get.which_body = kOpGetDeviceSettings;
+  send(get, &peer);
+  TEST_ASSERT_EQUAL(meshpigeon_Error_ErrorCode_ERROR_CODE_AUTH_REQUIRED,
+                    peer.at(0).error());
+  sink->clear();
+  send(get, sink);
+  TEST_ASSERT_EQUAL(meshpigeon_RadioToClient_device_settings_tag,
+                    sink->at(0).which());
+  proc->remove_sink(&peer);
+}
+
+void test_max_length_strings_survive_the_wire() {
+  // nanopb counts the NUL inside a string's buffer, so a cap of exactly the
+  // documented length silently truncated every maximum-size value. This
+  // round-trips the limits through real encode/decode, so a future edit to
+  // the *.options caps fails here rather than on a device.
+  TEST_ASSERT_TRUE(DeviceSettings::valid_name("01234567890123456789", 20));
+  TEST_ASSERT_TRUE(DeviceSettings::valid_ssid("01234567890123456789012345678901",
+                                             32));
+  TEST_ASSERT_TRUE(DeviceSettings::valid_password(
+      "012345678901234567890123456789012345678901234567890123456789012", 63));
+  TEST_ASSERT_TRUE(DeviceSettings::valid_pin("12345678", 8));
+
+  ClientToRadioMessage req = request(1);
+  req.which_body = kOpSetDeviceSettings;
+  SetDeviceSettingsMessage& m = req.body.set_device_settings;
+  m.has_name = true;
+  set_str(m.name, sizeof(m.name), "01234567890123456789");
+  m.has_wifi_ssid = true;
+  set_str(m.wifi_ssid, sizeof(m.wifi_ssid),
+          "01234567890123456789012345678901");
+  m.has_wifi_password = true;
+  set_str(m.wifi_password, sizeof(m.wifi_password),
+          "012345678901234567890123456789012345678901234567890123456789012");
+  m.has_pin = true;
+  set_str(m.pin, sizeof(m.pin), "12345678");
+  send(req, sink);
+
+  TEST_ASSERT_EQUAL(meshpigeon_RadioToClient_device_settings_tag,
+                    sink->at(0).which());
+  const DeviceSettingsMessage& r = sink->at(0).m().body.device_settings;
+  TEST_ASSERT_EQUAL_STRING("01234567890123456789", r.name);
+  TEST_ASSERT_EQUAL_STRING("01234567890123456789012345678901", r.wifi_ssid);
+  TEST_ASSERT_EQUAL_STRING(
+      "012345678901234567890123456789012345678901234567890123456789012",
+      r.wifi_password);
+  // ...and the 8-digit PIN round-tripped through Auth.
+  DeviceSettings stored;
+  TEST_ASSERT_TRUE(sstore->load_device(&stored));
+  TEST_ASSERT_EQUAL_STRING("12345678", stored.pin);
+  sink->clear();
+  ClientToRadioMessage auth = request(2);
+  auth.which_body = kOpAuth;
+  set_str(auth.body.auth.pin, sizeof(auth.body.auth.pin), "12345678");
+  send(auth, sink);
+  TEST_ASSERT_EQUAL(meshpigeon_RadioToClient_ok_tag, sink->at(0).which());
 }
 
 void test_set_device_settings_capability_gate() {
@@ -1289,8 +1614,10 @@ void test_factory_reset() {
   TEST_ASSERT_TRUE(proc->device_settings().pin_is_default());
   TEST_ASSERT_EQUAL(0, proc->device_settings().name[0]);
   TEST_ASSERT_EQUAL(0, store->count());
+  // The record is forgotten, not overwritten with defaults: the next boot
+  // reads "never written" and falls back itself.
   DeviceSettings loaded;
-  sstore->load_device(&loaded);
+  TEST_ASSERT_FALSE(sstore->load_device(&loaded));
   TEST_ASSERT_TRUE(loaded == DeviceSettings::defaults());
 }
 
@@ -1407,15 +1734,23 @@ int main() {
   RUN_TEST(test_send_packet_max_raw_size_accepted);
   RUN_TEST(test_fetch_packets_streams_entries_and_end);
   RUN_TEST(test_fetch_packets_since_cursor_skips_old);
+  RUN_TEST(test_fetch_packets_is_capped_per_request);
   RUN_TEST(test_rx_packet_pushes_to_all_sinks);
   RUN_TEST(test_purge_store);
+  RUN_TEST(test_sink_registry_is_bounded_and_shared);
   RUN_TEST(test_device_info);
   RUN_TEST(test_device_info_radio_failure);
+  RUN_TEST(test_boot_reports_a_dead_radio_and_still_loads_settings);
+  RUN_TEST(test_send_packet_survives_a_failed_apply);
   RUN_TEST(test_device_settings_defaults);
   RUN_TEST(test_set_device_name_renames_and_broadcasts);
   RUN_TEST(test_set_device_settings_wifi_applies_live);
   RUN_TEST(test_set_device_settings_is_atomic);
   RUN_TEST(test_set_device_settings_capability_gate);
+  RUN_TEST(test_empty_pin_restores_the_factory_default);
+  RUN_TEST(test_max_length_strings_survive_the_wire);
+  RUN_TEST(test_device_settings_push_reaches_only_authorized_clients);
+  RUN_TEST(test_changing_the_pin_re_gates_other_connections);
   RUN_TEST(test_auth_gate);
   RUN_TEST(test_auth_is_per_connection);
   RUN_TEST(test_auth_rate_limit);

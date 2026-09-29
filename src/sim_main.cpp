@@ -57,9 +57,7 @@ class SimHooks : public IBoardHooks {
     strncpy(out, "A3F2", 5);
     out[4] = 0;
   }
-  void set_device_name(const char* name) override {
-    strncpy(name_, name, sizeof(name_) - 1);
-  }
+  void set_device_name(const char* name) override { (void)name; }  // the sim has nothing to rename
   void fill_status(StatusMessage* status) override {
     // Scripted transitions: OFF -> CONNECTING (immediately) -> CONNECTED
     // after ~2 s, driven off the sim clock.
@@ -90,11 +88,6 @@ class SimHooks : public IBoardHooks {
   bool wifi_supported() const override { return g_fake_wifi; }
 
   uint8_t wifi_tcp_clients() override { return (uint8_t)g_tcp_clients; }
-
-  const char* name() const { return name_; }
-
- private:
-  char name_[MESHPIGEON_NAME_MAX + 1] = {0};
 };
 
 static SimHooks sim_hooks;
@@ -137,8 +130,7 @@ static std::vector<Client*> clients;
 
 static void sim_loop_tick(uint32_t traffic_ms) {
   sim_clock.advance(1);
-  uptime.poll();
-  g_processor->poll();
+  g_processor->poll();  // also refreshes the 64-bit uptime
 
   // Synthetic OTA traffic so connected apps see live packets.
   static uint32_t last_traffic = 0;

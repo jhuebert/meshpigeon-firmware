@@ -2,21 +2,25 @@
 # string/bytes field generates on the device (nanopb default: 128 bytes).
 # Sizes mirror the limits documented in the .proto comments and enforced by
 # the firmware's validation.
+#
+# RULE: a string field's cap is (documented max length + 1) — nanopb counts
+# the NUL terminator inside the buffer, so `max_size: 20` would only carry
+# 19 characters. bytes fields (no terminator) are capped at the exact size.
 
-meshpigeon.DeviceInfo.board_name max_size:16
+meshpigeon.DeviceInfo.board_name max_size:17
 meshpigeon.DeviceInfo.fw_version max_size:16
 meshpigeon.DeviceInfo.capabilities max_count:16
 
-meshpigeon.DeviceSettings.name max_size:20
-meshpigeon.DeviceSettings.wifi_ssid max_size:32
-meshpigeon.DeviceSettings.wifi_password max_size:63
+meshpigeon.DeviceSettings.name max_size:21
+meshpigeon.DeviceSettings.wifi_ssid max_size:33
+meshpigeon.DeviceSettings.wifi_password max_size:64
 
-meshpigeon.SetDeviceSettings.name max_size:20
-meshpigeon.SetDeviceSettings.pin max_size:8
-meshpigeon.SetDeviceSettings.wifi_ssid max_size:32
-meshpigeon.SetDeviceSettings.wifi_password max_size:63
+meshpigeon.SetDeviceSettings.name max_size:21
+meshpigeon.SetDeviceSettings.pin max_size:9
+meshpigeon.SetDeviceSettings.wifi_ssid max_size:33
+meshpigeon.SetDeviceSettings.wifi_password max_size:64
 
-meshpigeon.Status.wifi_ssid max_size:32
+meshpigeon.Status.wifi_ssid max_size:33
 meshpigeon.Status.wifi_ipv4 max_size:4
 
-meshpigeon.Auth.pin max_size:8
+meshpigeon.Auth.pin max_size:9

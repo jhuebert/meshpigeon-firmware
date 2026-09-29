@@ -6,19 +6,23 @@
 //
 // ## Framing
 //
-//   wire frame :=  COBS(serialized_message)  0x00
+//   wire frame :=  COBS( envelope ‖ crc16 )  0x00
 //
 // One serialized envelope per frame on every transport (USB CDC, BLE NUS,
-// Wi-Fi TCP). CRC-16/CCITT-FALSE over the serialized bytes, appended
-// little-endian, as docs/radio-protocol.md describes. Requests carry a
-// client-chosen id; the response echoes it. Unsolicited (async) messages use
-// id = 0. Multi-message streams (FetchPackets) send several frames, each
-// echoing the request's id, with a terminator message.
+// Wi-Fi TCP). crc16 is CRC-16/CCITT-FALSE over the serialized envelope,
+// appended little-endian before the COBS pass, as docs/radio-protocol.md
+// describes. Requests carry a client-chosen id; the response echoes it.
+// Unsolicited (async) messages use id = 0. Multi-message streams
+// (FetchPackets) send several frames, each echoing the request's id, with a
+// terminator message.
 //
 // ## Evolution policy (normative)
 //
 //   * Only ever ADD fields, oneof variants, or enum values.
 //   * Never renumber or reuse a field number; `reserved` removed ones.
+//     This binds from the first *shipped* spec: while a spec_version is
+//     still unreleased there is nothing to stay compatible with, so fields
+//     may be renumbered freely and no `reserved` hole is left behind.
 //   * Unknown fields and unknown oneof variants are skipped by every protobuf
 //     decoder, so additive changes are backwards compatible by construction.
 //     Radios that predate a variant reply ERROR_CODE_BAD_COMMAND.

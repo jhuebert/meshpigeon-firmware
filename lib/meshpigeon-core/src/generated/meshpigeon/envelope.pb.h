@@ -42,7 +42,7 @@ typedef struct _meshpigeon_Ok {
 typedef struct _meshpigeon_Error {
     meshpigeon_Error_ErrorCode code;
     /* Short human-readable hint for logs/UI. Not stable for parsing. */
-    char message[64];
+    char message[65];
 } meshpigeon_Error;
 
 typedef PB_BYTES_ARRAY_T(500) meshpigeon_Ping_payload_t;
@@ -292,7 +292,7 @@ extern const pb_msgdesc_t meshpigeon_Pong_msg;
 /* Maximum encoded size of messages (where known) */
 #define MESHPIGEON_MESHPIGEON_ENVELOPE_PB_H_MAX_SIZE meshpigeon_ClientToRadio_size
 #define meshpigeon_ClientToRadio_size            512
-#define meshpigeon_Error_size                    67
+#define meshpigeon_Error_size                    68
 #define meshpigeon_Ok_size                       0
 #define meshpigeon_Ping_size                     503
 #define meshpigeon_Pong_size                     503

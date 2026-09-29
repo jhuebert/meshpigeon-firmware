@@ -61,7 +61,6 @@ prose companion (framing, semantics, evolution policy) and is normative too.
 wire frame := COBS( envelope ‖ crc16 ) 0x00        CRC-16/CCITT-FALSE, LE
 envelope   := serialized ClientToRadio or RadioToClient
 ```
-
 - Requests carry a non-zero `id`; responses echo it; async pushes use `id = 0`.
   An envelope that fails to decode, or decodes with `id == 0`, is **dropped
   silently** — there is no id to answer an error against.
@@ -76,14 +75,16 @@ envelope   := serialized ClientToRadio or RadioToClient
   `ble_clients` / `usb_cdc_clients` / `wifi_tcp_clients`). Do not put either
   kind in the other message.
 - The PIN is **write-only on the wire** — `DeviceSettings` has no PIN field
-  (field 2 is reserved) and must never grow one.
+  and must never grow one. Writing an empty `pin` restores the factory
+  default; absent leaves it alone.
 - Device settings: name, Wi-Fi (enabled/ssid/password/port, default 5000).
   `SetDeviceSettings` is atomic (validate everything, then apply) and
   capability-gated (Wi-Fi on a non-Wi-Fi board → `NOT_SUPPORTED`, nothing
   applied). Auth gates it, the PIN, radio settings, and the store commands;
   ping, device info, status, auth and bootloader stay open.
 - Auth is per connection, the shipped default PIN is the public `"0000"`, three
-  failures are free and then a 1 s penalty window applies.
+  failures are free and then a 1 s penalty window applies (per *device*, not
+  per connection, so parallel sockets do not multiply the guess rate).
 - Wi-Fi (ESP32 envs only): station + DHCP, multi-client TCP (≤ 4), mDNS
   `meshpigeon-XXXX.local`, retries 5 s → 2 min forever.
 
@@ -94,10 +95,16 @@ what a client author reads.
 
 1. Add the request/response messages and the `oneof` members in the `.proto`
    files (**append only** — never renumber, never reuse; `reserved` what you
-   remove).
+   remove). That binds from the first *shipped* spec: while `spec_version` is
+   still unreleased there is nothing to stay compatible with, so renumber
+   freely and leave no `reserved` hole.
 2. Extend `protobufs/meshpigeon/*.options` if the new field is a string/bytes
    field: **the generated C must stay 100 % static** — no `pb_callback_t`, no
-   heap. A field without a cap silently reintroduces them.
+   heap. A field without a cap silently reintroduces them. A **string** cap is
+   the documented character limit **+ 1** (nanopb counts the NUL inside the
+   buffer, so `max_size: 20` carries only 19 characters — a cap that looks
+   right and truncates every maximum-size value); a **bytes** cap is the
+   exact size.
 3. Regenerate: `NANOPB_DIR=/path/to/nanopb-0.4.9 ./scripts/regen-protos.sh`
    and commit the result. CI fails on stale output.
 4. Handle it in `CommandProcessor::handle_request`, with auth where the
@@ -128,8 +135,7 @@ src/transports.h             USB CDC + BLE (Nordic UART Service) frame sinks
 src/wifi_transport.{h,cpp}   Wi-Fi station + multi-client TCP + mDNS (ESP32 only)
 src/sim_main.cpp             desktop radio simulator (TCP, scriptable RF loss/dup)
 include/meshpigeon/sim_radio.h  SimRadio : ILoRaRadio for the simulator
-test/test_core.cpp           host unit tests (Unity), the whole core
-boards/, variants/           custom board definitions + linker scripts
+test/test_core.cpp           host unit tests (Unity), the whole coreboards/, variants/           custom board definitions + linker scripts
 scripts/                     regen-protos.sh, bench.sh, mesh-sim.sh
 docs/                        supplemental documentation only
   radio-protocol.md          the versioned interface contract
@@ -144,7 +150,7 @@ the board's persistence.
 ## 4. Build, test, verify
 
 ```sh
-pio test -e native        # 56 host tests — the whole core, no hardware
+pio test -e native        # 63 host tests — the whole core, no hardware
 pio run                   # all four board targets must build
 pio run -e sim            # desktop simulator (.pio/build/sim/program)
 scripts/mesh-sim.sh 3     # N simulated radios on ports 8801..8803
@@ -216,6 +222,15 @@ These are not hypotheticals; each one cost a debugging session.
 - **nanopb `SetRadioSettings.settings` is an optional submessage**: setting the
   field without `has_settings` encodes an empty message. Same for every
   `optional` field in `SetDeviceSettings` — set the `has_*` flag.
+- **A nanopb string `max_size` counts the NUL.** `max_size: 20` is a
+  19-character field, so a cap that matches the documented limit by eye
+  truncates every value *at* the limit. Caps are limit + 1;
+  `test_max_length_strings_survive_the_wire` round-trips each one through real
+  encode/decode, so a future edit fails there, not on a device.
+- **A hook that fills an array must honour `max`.** `fill_capabilities()` is
+  handed `kMaxCapabilities`; a value that does not fit is neither written nor
+  counted. Ignoring `max` while still returning the count is how a board ends
+  up advertising `CAPABILITY_UNSPECIFIED` for every capability it has.
 - **`regen-protos.sh` needs an absolute, pre-created output directory.** The
   PyInstaller-packed generator mishandles relative `../` paths. The script
   resolves `OUT` with `$(pwd)` and `mkdir -p`s it; do not "simplify" that back.
@@ -225,16 +240,28 @@ These are not hypotheticals; each one cost a debugging session.
   symbols.
 - **nRF52 BLE TX is queued** (16 frames × `FRAME_MAX_WIRE`). v2 frames are
   ~520 B, so the queue is ~8 KB of RAM; the board still has headroom, but watch
-  the `t114`/`t1000e` RAM line when frames grow.
+  the `t114`/`t1000e` RAM line when frames grow. `send_frame()` waits a
+  *bounded* time for room and then drops the frame: a central that stops
+  reading must cost dropped frames, never a wedged board loop.
 - **`packet_store.h`'s on-ring `Header` puts the `uint64_t` first** on purpose:
   any other field order pads the struct to 24 bytes and breaks the
   `static_assert(sizeof(Header) == kStoredPacketOverhead)`.
-- **Anything the firmware advertises must match the BLE name**: both the
-  derived default name (`MeshPigeon-XXXX`) and the mDNS hostname
-  (`meshpigeon-XXXX`) come from `BoardHooks::mac_suffix()`, which is the BLE
-  address's two low bytes. Don't compute the suffix twice, differently.
-- The `CommandProcessor` sink registry holds **4** clients total, shared across
-  every transport (`kMaxSinks`). BLE + TCP clients compete for it.
+- **Anything the firmware advertises must match the BLE name**: the derived
+  default name (`MeshPigeon-XXXX`) and the mDNS hostname (`meshpigeon-XXXX`)
+  both come from `BoardHooks::mac_suffix()`. Compute the effective name
+  **once** — `CommandProcessor::effective_name()` — and hand it to the
+  transport; never re-derive the suffix inside a transport. That is also why
+  `main.cpp` boots the core *before* creating any transport: the settings
+  have to be loaded before the first advertisement.
+- **The `CommandProcessor` sink registry** holds **6** clients total, shared
+  across every transport (`kMaxSinks`) — enough for USB + BLE + the four TCP
+  clients the doc promises on ESP32. `add_sink()` returns `false` when it is
+  full, so a transport turns the extra client away; never ignore the result.
+- **`FetchPackets` is capped per request** (64 entries). The stream is written
+  straight out of the sink inside one handler call, so an unbounded
+  `max_count` would let a client hold the loop (and the BLE queue) for as long
+  as the store is deep. `FetchEnd` can report fewer entries than asked for;
+  clients resume from the last `seq`.
 - **The CRC is on the wire, so any client that isn't a transport has to strip
   it.** What arrives is `COBS(envelope ‖ crc16) 0x00`: read to the `0x00`
   delimiter, COBS-decode, **drop the trailing 2 bytes**, *then* protobuf-decode.

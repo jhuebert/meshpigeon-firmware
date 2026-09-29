@@ -2,7 +2,11 @@
 # string/bytes field generates on the device (nanopb default: 128 bytes).
 # Sizes mirror the limits documented in the .proto comments and enforced by
 # the firmware's validation (MESHPIGEON_MAX_FRAME_PAYLOAD).
+#
+# RULE: a string field's cap is (documented max length + 1) — nanopb counts
+# the NUL terminator inside the buffer. bytes fields (no terminator) are
+# capped at the exact size.
 
 meshpigeon.Ping.payload max_size:500
 meshpigeon.Pong.payload max_size:500
-meshpigeon.Error.message max_size:64
+meshpigeon.Error.message max_size:65

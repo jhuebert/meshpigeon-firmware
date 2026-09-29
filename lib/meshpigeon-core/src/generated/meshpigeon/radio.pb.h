@@ -81,7 +81,10 @@ typedef struct _meshpigeon_FetchPackets {
     /* Resume cursor: only entries with seq > since_seq are sent. Use
  StoreInfo.oldest_seq to start from the beginning. */
     uint32_t since_seq;
-    /* Upper bound on entries delivered in this stream. */
+    /* Upper bound on entries delivered in this stream. The firmware clamps
+ this to a per-request cap (it streams straight out of the sink, and a
+ board must stay responsive), so FetchEnd.count may come back smaller
+ than asked for: re-issue with since_seq = the last seq you received. */
     uint32_t max_count;
 } meshpigeon_FetchPackets;
 

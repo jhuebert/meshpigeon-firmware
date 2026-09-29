@@ -19,7 +19,7 @@ class Sx1262Radio : public ILoRaRadio {
                                     MESHPIGEON_PIN_LORA_RST,
                                     MESHPIGEON_PIN_LORA_BUSY)) {}
 
-  bool begin() {
+  bool begin() override {
     float tcxo = 0.0f;
 #ifdef MESHPIGEON_LORA_TCXO_MV
     tcxo = MESHPIGEON_LORA_TCXO_MV / 1000.0f;
@@ -30,9 +30,8 @@ class Sx1262Radio : public ILoRaRadio {
     digitalWrite(MESHPIGEON_PIN_RADIO_POWER_EN, HIGH);
     delay(10);
 #endif
-    // RadioLib validates these at begin(); the CommandProcessor applies the
-    // persisted settings right after (last_settings_ starts at the unset
-    // region preset).
+    // RadioLib validates the tuning here; the safe default stands until
+    // CommandProcessor::boot() applies whatever was persisted.
     int state = radio_.begin((float)last_settings_.freq_hz / 1000000.0f,
                              (float)last_settings_.bw_x100khz / 100.0f,
                              last_settings_.sf, last_settings_.cr,
@@ -105,7 +104,6 @@ class Sx1262Radio : public ILoRaRadio {
   }
 
   bool receive(uint8_t* raw, uint8_t* len, int8_t* rssi, int8_t* snr) override {
-    if (rx_paused_) return false;
     uint16_t irq = radio_.getIrqFlags();
     if (!(irq & RADIOLIB_SX126X_IRQ_RX_DONE)) return false;
     bool crc_ok = !(irq & (RADIOLIB_SX126X_IRQ_CRC_ERR |
@@ -132,7 +130,6 @@ class Sx1262Radio : public ILoRaRadio {
   SX1262 radio_;
   RadioSettings last_settings_ = RadioSettings::unset();
   bool tx_started_ = false;
-  bool rx_paused_ = false;
 };
 
 }  // namespace meshpigeon

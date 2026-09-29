@@ -93,6 +93,7 @@ struct DeviceSettings {
   static bool valid_name(const char* s, size_t len) {
     return s != NULL && len <= MESHPIGEON_NAME_MAX;
   }
+  /** A PIN *value* is 4..8 ASCII digits. */
   static bool valid_pin(const char* s, size_t len) {
     if (s == NULL || len < MESHPIGEON_PIN_MIN || len > MESHPIGEON_PIN_MAX) {
       return false;
@@ -101,6 +102,23 @@ struct DeviceSettings {
       if (s[i] < '0' || s[i] > '9') return false;
     }
     return true;
+  }
+  /** What a SetDeviceSettings `pin` field may carry: a PIN, or the empty
+   *  string, which is the documented "restore the factory default"
+   *  (absent = unchanged). There is no "no PIN" state. */
+  static bool valid_pin_set(const char* s, size_t len) {
+    return s != NULL && (len == 0 || valid_pin(s, len));
+  }
+  /** Apply a validated SetDeviceSettings `pin` value. */
+  static void set_pin(char* dst, const char* s) {
+    size_t len = strlen(s);
+    if (len == 0) {
+      // "restore the factory default" — there is no "no PIN" state
+      strncpy(dst, kDefaultPin(), MESHPIGEON_PIN_MAX);
+    } else {
+      memcpy(dst, s, len);  // bounded by valid_pin_set above
+    }
+    dst[MESHPIGEON_PIN_MAX] = 0;
   }
   static bool valid_ssid(const char* s, size_t len) {
     return s != NULL && len <= MESHPIGEON_SSID_MAX;
@@ -128,6 +146,10 @@ class SettingsStore {
    *  load() yields defaults when nothing is stored yet. */
   virtual bool save_device(const DeviceSettings& s) = 0;
   virtual bool load_device(DeviceSettings* out) = 0;  // false => defaults
+  /** Forget the stored device settings entirely (FACTORY_RESET) — the
+   *  next load_device() reports defaults. Removing the record beats writing
+   *  defaults over it: no wear, and no stale keys left behind. */
+  virtual void clear_device() = 0;
 };
 
 /** In-memory store for tests and the simulator. */
@@ -156,6 +178,7 @@ class MemorySettingsStore : public SettingsStore {
     *out = saved_device_;
     return true;
   }
+  void clear_device() override { have_device_ = false; }
 
  private:
   RadioSettings saved_;

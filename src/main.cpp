@@ -46,7 +46,6 @@ static const char* const kBoardName =
 #endif
 
 static const char* const kFwVersion = "0.1.0";
-static const char* const kBleName = "MeshPigeon";
 
 #if defined(MESHPIGEON_STORE_BYTES)
 static const uint32_t kStoreBytes = MESHPIGEON_STORE_BYTES;
@@ -63,6 +62,17 @@ static BleSink* g_ble = NULL;
 #if defined(MESHPIGEON_HAS_WIFI)
 static WifiTransport* g_wifi = NULL;
 #endif
+
+// Reboot, bootloader and factory reset all end the same way; the difference
+// is what was persisted before we got here.
+static void reboot_now() {
+  delay(10);
+#if defined(ARDUINO_ARCH_ESP32)
+  ESP.restart();
+#else
+  NVIC_SystemReset();
+#endif
+}
 
 class BoardHooks : public IBoardHooks {
  public:
@@ -90,32 +100,16 @@ class BoardHooks : public IBoardHooks {
 #endif
   }
 
-  void reboot_to_bootloader() override {
-    // v1: plain restart. Real ROM/DFU entry ships with in-app flashing
-    // (docs/radio-protocol.md §BOOTLOADER notes the contract).
-    delay(10);
-#if defined(ARDUINO_ARCH_ESP32)
-    ESP.restart();
-#else
-    NVIC_SystemReset();
-#endif
-  }
+  void reboot_to_bootloader() override { reboot_now(); }
 
-  void reboot() override {
-    delay(10);
-#if defined(ARDUINO_ARCH_ESP32)
-    ESP.restart();
-#else
-    NVIC_SystemReset();
-#endif
-  }
+  void reboot() override { reboot_now(); }
 
-  void factory_reset() override;  // defined below: needs BoardSettingsStore
+  void factory_reset() override { reboot_now(); }
 
   void mac_suffix(char out[5]) override {
     // The same two bytes the BLE name uses, so the derived device name and
     // the advertised name agree (docs/radio-protocol.md §8.3).
-    char hex[5];
+    char hex[5] = {0};
 #if defined(ARDUINO_ARCH_ESP32)
     const NimBLEAddress addr = NimBLEDevice::getAddress();
     const uint8_t* a = addr.getNative();  // little-endian: a[0] is the LSB
@@ -124,8 +118,6 @@ class BoardHooks : public IBoardHooks {
     ble_gap_addr_t addr;
     if (sd_ble_gap_addr_get(&addr) == NRF_SUCCESS) {
       snprintf(hex, sizeof(hex), "%02X%02X", addr.addr[1], addr.addr[0]);
-    } else {
-      hex[0] = 0;
     }
 #endif
     strncpy(out, hex, 4);
@@ -141,9 +133,12 @@ class BoardHooks : public IBoardHooks {
   }
 
   uint8_t usb_cdc_clients() override {
-    // The console is a single client: a host with the port open (DTR
-    // asserted on ESP32, CDC mounted on nRF52). Nothing listening = 0.
-    return Serial ? 1 : 0;
+    // The console is one implicit client, and no Arduino core exposes a
+    // portable "a host has attached" signal (ESP32's HWCDC and the nRF52
+    // BSP's USB CDC both lack one). So this reports the transport being
+    // present, which is always true here — the CDC sink is unconditionally
+    // built. Documented as such in docs/radio-protocol.md §9.
+    return 1;
   }
 
   uint8_t wifi_tcp_clients() override {
@@ -182,19 +177,19 @@ class BoardHooks : public IBoardHooks {
 
   pb_size_t fill_capabilities(meshpigeon_Capability* out,
                               pb_size_t max) override {
+    // Compile-time facts, so they are just the #ifdefs — no probing, and
+    // nothing that can fail at runtime (docs/radio-protocol.md §5).
     pb_size_t n = 0;
-    auto add = [&](meshpigeon_Capability c) {
-      if (n < max) out[n] = c;
+    auto add = [&](Capability c) {
+      if (n < max) out[n] = static_cast<meshpigeon_Capability>(c);
       n++;
     };
-    if (wifi_supported()) add(meshpigeon_Capability_CAPABILITY_WIFI_STA);
+    if (wifi_supported()) add(kCapWifiSta);
 #if defined(MESHPIGEON_PIN_VBAT_ADC) || defined(MESHPIGEON_BOARD_T1000E)
-    add(meshpigeon_Capability_CAPABILITY_BATTERY);
+    add(kCapBattery);
 #endif
-    add(meshpigeon_Capability_CAPABILITY_BLE);
-#if defined(ARDUINO_USB_CDC_ON_BOOT)
-    add(meshpigeon_Capability_CAPABILITY_USB_CDC);
-#endif
+    add(kCapBle);
+    add(kCapUsbCdc);  // the CDC console is built unconditionally (main.cpp)
     return n;
   }
 };
@@ -253,7 +248,7 @@ class BoardSettingsStore : public SettingsStore {
     out->wifi_port = nvs_.getUShort("wifiport", MESHPIGEON_WIFI_PORT_DEFAULT);
     return true;
   }
-  void wipe_device() {
+  void clear_device() override {
     nvs_.remove("name");
     nvs_.remove("pin");
     nvs_.remove("wifie");
@@ -371,7 +366,7 @@ class BoardSettingsStore : public SettingsStore {
     out->wifi_port = b.wifi_port;
     return true;
   }
-  void wipe_device() {
+  void clear_device() override {
     InternalFS.begin();
     InternalFS.remove("/dev.bin");
   }
@@ -389,13 +384,6 @@ class BoardSettingsStore : public SettingsStore {
 #endif
 
 // ---- main ---------------------------------------------------------------------
-
-void BoardHooks::factory_reset() {
-  // Device settings only: the radio tuning and the boot count survive
-  // (docs/radio-protocol.md §10) — a factory reset is "as it shipped", not "as new".
-  if (g_settings_store) g_settings_store->wipe_device();
-  reboot();
-}
 
 static PacketStore* g_store;
 static BoardHooks g_hooks;
@@ -423,7 +411,8 @@ static ArduinoMillis g_arduino_millis;
 static UptimeClock g_uptime(g_arduino_millis);
 
 static void radio_loop() {
-  // Complete pending TX first — TX owns the air.
+  // Complete pending TX first — TX owns the air. poll() also refreshes the
+  // 64-bit uptime, so the board loop never has to touch the clock itself.
   g_processor->poll();
   // Then pull anything the radio caught.
   uint8_t raw[MESHPIGEON_MAX_RAW_PACKET];
@@ -461,36 +450,30 @@ void setup() {
   g_processor = new CommandProcessor(*g_store, g_uptime, *g_settings_store,
                                      *g_radio, kBoardName, kFwVersion);
   g_processor->set_hooks(&g_hooks);
+  // Boot before the transports exist: the settings have to be loaded to know
+  // the effective name, so the first advertisement is already the right one
+  // (docs/radio-protocol.md §8.3). A radio that failed to come up still
+  // leaves a device that answers, with radio_ok = false.
+  g_processor->boot();
+
+  char effective[MESHPIGEON_NAME_MAX + 1];
+  g_processor->effective_name(effective);
+
   g_usb.begin(*g_processor);  // sets the back-pointer; add_sink() alone leaves proc_ null
   // transports.h defines the platform's BLE sink class.
   g_ble = new BleSink();
-  g_ble->begin(*g_processor, kBleName);
+  g_ble->begin(*g_processor, effective);
 #if defined(MESHPIGEON_HAS_WIFI)
   g_wifi = new WifiTransport();
   char hostname[24];
   wifi_hostname(hostname);
   g_wifi->begin(*g_processor, hostname);
-#endif
-
-  bool applied = g_radio->begin();
-  if (applied) g_processor->boot();  // applies persisted settings
-  // If the radio failed to init we still answer commands (GET_INFO works),
-  // we just can't hear anything — the app will see apply failures.
-
-#if defined(MESHPIGEON_HAS_WIFI)
   // A pigeon on a shelf with Wi-Fi enabled comes back up on the network
   // with no app attached (docs/radio-protocol.md §7).
   if (g_processor->device_settings().wifi_enabled) {
     g_wifi->apply(g_processor->device_settings());
   }
 #endif
-
-  // The effective name wins at boot too: a stored name is applied to the
-  // advertisement, otherwise the derived MeshPigeon-XXXX stands
-  // (docs/radio-protocol.md §8.3).
-  char effective[MESHPIGEON_NAME_MAX + 1];
-  g_processor->effective_name(effective);
-  g_ble->set_name(effective);
 
   // USB CDC takes a moment on some boards; don't block boot on it.
 #if defined(ARDUINO_ARCH_ESP32)
@@ -499,7 +482,6 @@ void setup() {
 }
 
 void loop() {
-  g_uptime.poll();
   g_usb.pump();
   g_ble->pump();
 #if defined(MESHPIGEON_HAS_WIFI)

@@ -61,21 +61,16 @@ uint16_t frame_crc(const uint8_t* frame, size_t frame_len) {
   return crc;
 }
 
-size_t frame_build(uint8_t* out, uint8_t cmd, uint8_t nonce, uint8_t status,
-                   const uint8_t* payload, size_t payload_len) {
-  // The cmd/nonce/status arguments are ignored since v2: a frame is just the
-  // serialized envelope plus its CRC.
-  (void)cmd;
-  (void)nonce;
-  (void)status;
-  if (payload_len > 0 && payload != NULL) {
-    memcpy(out, payload, payload_len);
+size_t frame_build(uint8_t* out, const uint8_t* envelope,
+                   size_t envelope_len) {
+  if (envelope_len > 0 && envelope != NULL) {
+    memcpy(out, envelope, envelope_len);
   }
   uint16_t crc = 0;
-  crc16_ccitt(&crc, out, payload_len);
-  out[payload_len] = (uint8_t)(crc & 0xFF);
-  out[payload_len + 1] = (uint8_t)(crc >> 8);
-  return payload_len + 2;
+  crc16_ccitt(&crc, out, envelope_len);
+  out[envelope_len] = (uint8_t)(crc & 0xFF);
+  out[envelope_len + 1] = (uint8_t)(crc >> 8);
+  return envelope_len + 2;
 }
 
 size_t frame_encode_wire(uint8_t* out, const uint8_t* decoded,
@@ -89,12 +84,8 @@ size_t frame_encode_envelope(uint8_t* out, const uint8_t* envelope,
                              size_t envelope_len) {
   uint8_t with_crc[FRAME_MAX_DECODED];
   if (envelope_len + 2 > sizeof(with_crc)) return 0;
-  memcpy(with_crc, envelope, envelope_len);
-  uint16_t crc = 0;
-  crc16_ccitt(&crc, envelope, envelope_len);
-  with_crc[envelope_len] = (uint8_t)(crc & 0xFF);
-  with_crc[envelope_len + 1] = (uint8_t)(crc >> 8);
-  return frame_encode_wire(out, with_crc, envelope_len + 2);
+  return frame_encode_wire(out, with_crc,
+                           frame_build(with_crc, envelope, envelope_len));
 }
 
 size_t FrameReader::feed(uint8_t byte, uint8_t* frame_out) {

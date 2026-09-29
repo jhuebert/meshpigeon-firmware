@@ -39,7 +39,9 @@ on the client's version — it only reports its own.
 | BLE | Nordic UART Service (`6E400001-B5A3-F393-E0A9-E50E24DCCA9E`) | write-to-device char `6E400002-…`, notify-from-device char `6E400003-…`; multiple centrals on ESP32, single central on nRF52 |
 | Wi-Fi TCP | raw TCP server, default port **5000** | multi-client (≤ 4), ESP32 boards only (§7); mDNS `_meshpigeon._tcp` |
 
-BLE notify chunks frames at ≤ 20 bytes so pre-MTU-exchange clients work.
+BLE notify chunks frames at ≤ 20 bytes so pre-MTU-exchange clients work. The
+BLE auth state is per-*transport*, not per-central: the NUS link is one
+serial-equivalent connection, and a client on it is one client.
 
 ## 2. Framing
 
@@ -95,7 +97,7 @@ Async pushes (`id = 0`), broadcast to every connected client:
 | `PacketEntry` | a packet was received on the air (live push, same shape as a fetch entry) |
 | `TxResult` | a `SendPacket` transmission finished |
 | `RadioSettings` | another client re-tuned the radio (sent to everyone *except* the issuer) |
-| `DeviceSettings` | another client changed device settings (everyone except the issuer) |
+| `DeviceSettings` | another client changed device settings (everyone except the issuer — **and only connections that are authorized to see it**, since the read model carries the Wi-Fi passphrase) |
 | `Status` | the Wi-Fi state changed (§9) |
 
 ## 4. Errors
@@ -108,8 +110,8 @@ human-readable hint, explicitly not a contract.
 | `ERROR_CODE_BAD_COMMAND` | unknown operation (radio predates the oneof variant, or a bug) |
 | `ERROR_CODE_BAD_PAYLOAD` | wrong size/format/validation — rejected atomically, nothing applied |
 | `ERROR_CODE_BUSY` | TX in flight, or the first-owner lock is active (§6) |
-| `ERROR_CODE_TX_FAILED` | the radio refused or failed the transmission |
-| `ERROR_CODE_NO_RADIO` | radio init failed; the device answers but cannot use the air |
+| `ERROR_CODE_TX_FAILED` | the radio refused the tuning or the transmission |
+| `ERROR_CODE_NO_RADIO` | the radio failed to come up or refused a tuning, so there is no air to use |
 | `ERROR_CODE_NOT_SUPPORTED` | feature absent on this board (capability-gated, §8) |
 | `ERROR_CODE_AUTH_REQUIRED` | a PIN is set and this connection has not authenticated (§8) |
 
@@ -119,13 +121,12 @@ human-readable hint, explicitly not a contract.
 |---|---|
 | `spec_version` | 2 |
 | `fw_version`, `board_name` | strings ("XIAO WIO", "HELTEC V3", "T114", "T1000-E", "SIM") |
-| `capabilities` | repeated enum: `WIFI_STA`, `BATTERY`, `BLE`, `USB_CDC` — compile-time facts, never probed |
-| `uptime_ms` | monotonic 64-bit uptime (§5.1) |
+| `capabilities` | repeated enum: `WIFI_STA`, `BATTERY`, `BLE`, `USB_CDC` — compile-time facts, never probed || `uptime_ms` | monotonic 64-bit uptime (§5.1) |
 | `boot_count` | real boots, persisted; informational only |
 | `store` | `count`, `capacity_bytes`, `dropped`, `oldest_seq` |
 | `radio_config_epoch` | bumped on every accepted `SetRadioSettings` |
 | `battery_mv` | 0xFFFF = unknown (device status, not mesh telemetry) |
-| `radio_ok` | false when the radio failed to init or apply |
+| `radio_ok` | false when the radio failed to come up or to accept the persisted tuning; `SendPacket` then answers `ERROR_CODE_NO_RADIO` |
 | `auth_required` | true when a PIN is set and *this* connection is not authenticated |
 | `noise_floor_dbm` | estimated receiver noise floor in dBm; **0 = unknown** (nothing received since boot) |
 
@@ -166,9 +167,18 @@ tunes what it is told.
   on every accepted change; all connected clients except the issuer get the
   async `RadioSettings` push, then the issuer gets the post-bump settings as
   its response.
-- Out-of-range values (zero frequency/bandwidth, SF or CR out of range) are
-  rejected with `ERROR_CODE_BAD_PAYLOAD`; a radio that refuses the applied
-  settings answers `ERROR_CODE_TX_FAILED`.
+- Out-of-range values (zero frequency/bandwidth, a bandwidth that is not a
+  whole 10 Hz step, SF or CR out of range) are rejected with
+  `ERROR_CODE_BAD_PAYLOAD`; a radio that refuses the applied settings answers
+  `ERROR_CODE_TX_FAILED` and keeps the previous tuning, persisted and in
+  force. `bandwidth_hz` is checked *before* it is converted to the internal
+  0.01 kHz unit, so an out-of-range value can never wrap into a valid-looking
+  one.
+- **Persistence is best-effort.** A flash write that fails is not reported
+  (there is no error code for it, and NVS cannot report one reliably); the
+  setting is applied in RAM and the response reflects that. The radio tuning
+  is the only thing a device is useless without, and it is written only when
+  an app asks for it.
 
 ### 6.1 First-owner lock
 
@@ -192,9 +202,14 @@ decision and last-writer-wins is self-healing.
   `WIFI_STATE_AUTH_FAIL` in `Status`, and the user may have rotated the
   password. No "disable after N failures" policy exists.
 - **Multi-client TCP**, exactly like the ESP32 BLE sink: one frame reader and
-  one sink per socket (≤ 4, the size of the sink registry), broadcast to all
-  of them. Default port 5000 (the convention MeshCore's desktop tooling
-  standardized on), overridable with `wifi_port`.
+  one sink per socket, broadcast to all of them. The sink registry holds **6
+  slots shared by every transport**, so on a board that also runs USB CDC and
+  BLE that leaves the documented four concurrent TCP clients; the accept path
+  turns the next one away rather than accepting a connection nothing will ever
+  be sent to. Default port 5000 (the convention MeshCore's desktop tooling
+  standardized on), overridable with `wifi_port`. A socket that cannot take a
+  whole frame is closed: a client either sees the whole stream terminated by
+  `FetchEnd`, or a disconnect it can resume from its cursor.
 - **mDNS.** The device advertises `<hostname>.local` with a `_meshpigeon._tcp`
   service on the current port, so desktop tooling finds the pigeon without
   typing an IP. The hostname shares the derived device-name suffix
@@ -207,8 +222,7 @@ decision and last-writer-wins is self-healing.
 `DeviceSettings` is the device-level read model: the name, the Wi-Fi station
 settings, and the port. The **PIN is write-only on the wire** — no field of
 `DeviceSettingsMessage` carries it, and none ever will; the app remembers what
-it set. (`SetDeviceSettings.pin` uses field number 2, which is why the
-read model reserves that number.)
+it set.
 
 ### 8.1 `SetDeviceSettings` semantics
 
@@ -216,17 +230,24 @@ read model reserves that number.)
   the whole request with `ERROR_CODE_BAD_PAYLOAD` and **nothing** is applied.
   Partial application invites "which half saved?" UI bugs, and we never want
   a user to believe a setting took when the board can never honor it.
-- **Validated.** name ≤ 20 bytes; PIN 4–8 ASCII digits; SSID ≤ 32; password
-  ≤ 63 (the WPA2/3 limit); port ≠ 0.
+- **Validated.** name ≤ 20 bytes; PIN 4–8 ASCII digits, or the empty string
+  to restore the factory default (absent = unchanged); SSID ≤ 32; password
+  ≤ 63 (the WPA2/3 limit); port ≠ 0. Every limit is the exact cap in the
+  `*.options` files, NUL terminator included — a value at the limit
+  round-trips unchanged.
 - **Capability-gated.** Any Wi-Fi field on a board without the `WIFI_STA`
   capability → `ERROR_CODE_NOT_SUPPORTED`, nothing applied. The app hides
   those fields using `DeviceInfo.capabilities`; the firmware rejects as a
   backstop so a stale client cannot leave a dead setting behind.
 - **Persists immediately** and applies live: a name change re-advertises, a
-  PIN change re-gates immediately, Wi-Fi settings connect/disconnect.
+  PIN change re-gates immediately — every other connection that knew the old
+  PIN is locked out again — and Wi-Fi settings connect/disconnect.
 - **No first-owner lock** (§6.1).
 - Accepted writes broadcast the full post-write `DeviceSettings` to all
-  *other* clients, then answer the issuer with the same read model.
+  *other* clients, then answer the issuer with the same read model. That
+  broadcast — the only async push that carries a credential — reaches only
+  connections that could have called `GetDeviceSettings` anyway; an
+  unauthenticated socket attached to the device learns nothing from it.
 
 ### 8.2 The PIN
 
@@ -244,10 +265,17 @@ have a shared pairing concept.
   `get_device_info`, `get_status`, `auth`, `bootloader`. Everything else
   answers `ERROR_CODE_AUTH_REQUIRED`.
 - **Per-connection state.** Authenticating on BLE says nothing about the TCP
-  socket someone else opened; each connection holds its own flag.
-- **Rate limit.** The first 3 failed attempts are free. From the 4th on, a
-  1-second penalty window opens, and during it every attempt — even with the
-  correct PIN — is rejected unevaluated. Changing the PIN clears the budget.
+  socket someone else opened; each connection holds its own flag. Changing
+  the PIN clears every *other* connection's flag, so a session that knew the
+  old PIN does not survive a rotation.
+- **Rate limit, per device.** The first 3 failed attempts are free. From the
+  4th on, a 1-second penalty window opens, and during it every attempt —
+  even with the correct PIN, on any connection — is rejected unevaluated.
+  Deliberately *not* per connection: otherwise an attacker just opens
+  several sockets and multiplies the guess rate. The cost is that a stranger
+  can lock a legitimate client out for a second at a time, which is the
+  cheaper side of that trade for a device with no keys. Changing the PIN
+  clears the budget.
 - A static PIN over plaintext frames stops casual misuse, not a determined
   attacker with a sniffer. That is the right level for a device whose worst
   case leak is packets the *sender* already encrypted.
@@ -273,12 +301,12 @@ which link it is using.
 | Field | Meaning |
 |---|---|
 | `wifi_state` | `OFF`, `CONNECTING`, `CONNECTED`, `AUTH_FAIL` (AP rejected us), `ERROR` (no AP / driver) |
-| `wifi_ssid` | the SSID we are configured for |
+| `wifi_ssid` | the SSID we are **associated** with; empty when not associated (the *configured* one is what `GetDeviceSettings` reports) |
 | `wifi_ipv4` | 4 bytes, network byte order; empty when not connected |
-| `wifi_port` | the port the TCP server listens on |
+| `wifi_port` | the port the TCP server listens on (0 on boards with no Wi-Fi) |
 | `wifi_rssi` | dBm; **0 = unknown** (not connected) |
 | `ble_clients` | connected BLE centrals |
-| `usb_cdc_clients` | USB CDC hosts with the serial port open (0 or 1) |
+| `usb_cdc_clients` | 1 whenever the board exposes USB CDC — the console is one implicit client and no Arduino core exposes a portable "a host has attached" signal |
 | `wifi_tcp_clients` | TCP sockets the Wi-Fi server has open (0 on non-Wi-Fi boards) |
 
 ## 10. Packet store
@@ -289,16 +317,27 @@ packet larger than the whole pool is dropped and counted in `dropped`.
 
 - `SendPacket` stores the packet with origin `SENT` and keys up. One TX at a
   time: a second concurrent send answers `ERROR_CODE_BUSY`; the app's outbox
-  owns retry policy. The `TxResult` push reports the outcome later.
+  owns retry policy. A radio that is not usable (`radio_ok` false) answers
+  `ERROR_CODE_NO_RADIO` and stores nothing — the packet is never accepted, so
+  a `TxResult` can never claim a transmission that did not happen. The
+  `TxResult` push follows the response and reports the outcome later.
 - Packets received on the air are stored with origin `RECEIVED` and pushed
-  live to every connected client.
+  live to every connected client. A packet too large for the whole pool is
+  dropped and counted, and gets no live push: the app would otherwise see a
+  seq it could never fetch again.
 - `FetchPackets` streams every retained entry with `seq > since_seq`, oldest
-  first, up to `max_count`, then `FetchEnd` with the delivered count.
-  `since_seq` cursors stay valid across wraps and purges because sequence
-  numbers are monotonic and eviction only removes from the oldest end.
-- `PurgeStore` clears history only. `FactoryReset` clears settings **and**
-  history, then wipes device-settings persistence and reboots: "as it
-  shipped". The radio tuning and the boot count survive a factory reset.
+  first, up to `max_count`, then `FetchEnd` with the delivered count. The
+  firmware clamps `max_count` to one request's worth of entries (a stream is
+  written straight out of the sink inside one handler call, and a board has
+  to stay responsive), so `FetchEnd` can come back shorter than asked for:
+  re-issue with `since_seq` = the last seq received. `since_seq` cursors stay
+  valid across wraps and purges because sequence numbers are monotonic and
+  eviction only removes from the oldest end.
+- `PurgeStore` clears history only. `FactoryReset` clears the stored device
+  settings **and** history, then reboots: "as it shipped". The record is
+  deleted rather than overwritten with defaults, so the next boot reads
+  "never written" and falls back itself. The radio tuning and the boot count
+  survive a factory reset.
 
 ## 11. What is persisted
 
@@ -328,6 +367,9 @@ Deliberately, per the product's guiding principles:
 
 - **Only ever ADD** fields, oneof variants, or enum values.
 - **Never renumber or reuse a field number**; removed ones become `reserved`.
+  This binds from the first *shipped* spec: while a `spec_version` is still
+  unreleased there is nothing to stay compatible with, so fields may be
+  renumbered freely and no `reserved` hole is left behind.
 - Unknown fields and unknown oneof variants are skipped by every protobuf
   decoder, so additive changes are backwards compatible by construction. A
   radio that predates a variant answers `ERROR_CODE_BAD_COMMAND`.

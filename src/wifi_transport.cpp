@@ -15,10 +15,13 @@ static const uint32_t kBackoffMaxMs = 120000;
 void WifiTransport::Client::send_frame(const uint8_t* decoded, size_t len) {
   uint8_t wire[FRAME_MAX_WIRE];
   size_t n = frame_encode_envelope(wire, decoded, len);
-  if (client.write(wire, n) == 0) {
-    // The socket is gone or its buffer is full; the board loop notices on
-    // the next pump and drops this client.
-    return;
+  if (n == 0 || client.write(wire, n) != n) {
+    // The socket is gone or its buffer is full. Flag it: a dropped frame
+    // mid-stream (say, half a FetchPackets burst) would otherwise leave the
+    // client believing it received the whole thing, terminated by FetchEnd.
+    // The board loop closes the socket on the next pump, so the client sees
+    // a disconnect and resumes from its cursor.
+    broken = true;
   }
 }
 
@@ -121,13 +124,22 @@ void WifiTransport::accept_clients() {
   if (!c) return;
   for (size_t i = 0; i < kMaxClients; i++) {
     if (clients_[i].in_use) continue;
+    if (proc_ == NULL || proc_->sink_free() == 0) return;  // shared registry
     clients_[i].client.stop();
     clients_[i].client = c;
     clients_[i].reader.reset();
     clients_[i].in_use = true;
+    clients_[i].broken = false;
     clients_[i].authenticated = false;
     num_clients_++;
-    if (proc_) proc_->add_sink(&clients_[i]);
+    if (!proc_->add_sink(&clients_[i])) {
+      // Lost the race for the last slot: turn the client away rather than
+      // accepting a connection nothing will ever be sent to.
+      clients_[i].client.stop();
+      clients_[i].in_use = false;
+      num_clients_--;
+      return;
+    }
     return;
   }
   // At capacity: the extra client is dropped rather than queued.
@@ -137,17 +149,14 @@ void WifiTransport::pump_clients() {
   for (size_t i = 0; i < kMaxClients; i++) {
     Client& c = clients_[i];
     if (!c.in_use) continue;
-    while (c.client.available() > 0) {
+    while (!c.broken && c.client.available() > 0) {
       size_t res = c.reader.feed((uint8_t)c.client.read(), c.frame);
       if (res != 0 && res != (size_t)-1) {
         proc_->on_envelope(c.frame, res, &c);
       }
     }
-    if (!c.client.connected()) {
-      if (proc_) proc_->remove_sink(&c);
-      c.client.stop();
-      c.in_use = false;
-      num_clients_--;
+    if (c.broken || !c.client.connected()) {
+      drop_client(i);
     }
   }
 }
@@ -219,11 +228,15 @@ void WifiTransport::fill_status(StatusMessage* status) {
       status->wifi_state = meshpigeon_Status_WifiState_WIFI_STATE_ERROR;
       break;
   }
-  strncpy(status->wifi_ssid, settings_.wifi_ssid, sizeof(status->wifi_ssid) - 1);
-  status->wifi_ssid[sizeof(status->wifi_ssid) - 1] = 0;
+  // The proto field is the *associated* SSID, empty when not associated —
+  // the configured one is what GetDeviceSettings already reports.
+  status->wifi_ssid[0] = 0;
   status->wifi_port = port_;
   status->wifi_ipv4.size = 0;
   if (state_ == State::CONNECTED) {
+    strncpy(status->wifi_ssid, settings_.wifi_ssid,
+            sizeof(status->wifi_ssid) - 1);
+    status->wifi_ssid[sizeof(status->wifi_ssid) - 1] = 0;
     IPAddress ip = WiFi.localIP();
     for (uint8_t i = 0; i < 4; i++) {
       status->wifi_ipv4.bytes[i] = ip[i];

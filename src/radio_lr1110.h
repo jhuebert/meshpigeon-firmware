@@ -19,14 +19,13 @@ class Lr1110Radio : public ILoRaRadio {
                                     MESHPIGEON_PIN_LORA_RST,
                                     MESHPIGEON_PIN_LORA_BUSY)) {}
 
-  bool begin() {
+  bool begin() override {
     float tcxo = 0.0f;
 #ifdef MESHPIGEON_LORA_TCXO_MV
     tcxo = MESHPIGEON_LORA_TCXO_MV / 1000.0f;
 #endif
-    // RadioLib validates these at begin(); the CommandProcessor applies the
-    // persisted settings right after (last_settings_ starts at the unset
-    // region preset).
+    // RadioLib validates the tuning here; the safe default stands until
+    // CommandProcessor::boot() applies whatever was persisted.
     int state = radio_.begin((float)last_settings_.freq_hz / 1000000.0f,
                              (float)last_settings_.bw_x100khz / 100.0f,
                              last_settings_.sf, last_settings_.cr,
@@ -90,7 +89,6 @@ class Lr1110Radio : public ILoRaRadio {
   }
 
   bool receive(uint8_t* raw, uint8_t* len, int8_t* rssi, int8_t* snr) override {
-    if (rx_paused_) return false;
     uint32_t irq = radio_.getIrqFlags();
     if (!(irq & RADIOLIB_LR11X0_IRQ_RX_DONE)) return false;
     // Known LR11x0 quirk (MeshCore CustomLR1110): a corrupted header can
@@ -130,7 +128,6 @@ class Lr1110Radio : public ILoRaRadio {
   LR1110 radio_;
   RadioSettings last_settings_ = RadioSettings::unset();
   bool tx_started_ = false;
-  bool rx_paused_ = false;
 };
 
 #ifdef MESHPIGEON_RADIO_RF_SWITCH_TABLE

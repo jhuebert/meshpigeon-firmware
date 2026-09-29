@@ -12,11 +12,13 @@ namespace meshpigeon {
 /**
  * Desktop stand-in for a real LoRa radio. Scriptable: loss %, dup %, and a
  * synthetic traffic generator so app pipelines can be exercised in CI with
- * zero hardware (09-testing §2).
+ * zero hardware (AGENTS.md §4).
  */
 class SimRadio : public ILoRaRadio {
  public:
   explicit SimRadio(unsigned seed = 1234) : rng_(seed) {}
+
+  bool begin() override { return true; }  // no silicon to fail
 
   bool apply(const RadioSettings& s) override {
     applied_ = s;

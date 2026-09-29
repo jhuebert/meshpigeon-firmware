@@ -70,7 +70,7 @@ typedef struct _meshpigeon_DeviceInfo {
     /* Firmware version string, e.g. "0.2.0". */
     char fw_version[16];
     /* Board name, e.g. "XIAO WIO", "HELTEC V3", "T114", "T1000-E", "SIM". */
-    char board_name[16];
+    char board_name[17];
     /* What this board can do. Clients treat unknown values as "ignore this
  entry" — the same skip-unknown rule as fields — and rely on
  ERROR_CODE_NOT_SUPPORTED rejections as the backstop, so new capabilities
@@ -127,12 +127,12 @@ typedef struct _meshpigeon_DeviceSettings {
     /* Effective device/advertised name. Empty stored name is reported as the
  derived default ("MeshPigeon-XXXX" from the MAC), so this is never empty
  in a response. */
-    char name[20];
+    char name[21];
     bool wifi_enabled;
     /* Station SSID; empty when Wi-Fi is not configured. */
-    char wifi_ssid[32];
+    char wifi_ssid[33];
     /* WPA2/3 passphrase; empty when not configured. */
-    char wifi_password[63];
+    char wifi_password[64];
     /* TCP server port (default 5000). */
     uint32_t wifi_port;
 } meshpigeon_DeviceSettings;
@@ -145,22 +145,22 @@ typedef struct _meshpigeon_DeviceSettings {
 typedef struct _meshpigeon_SetDeviceSettings {
     /* 0..20 bytes. Empty string resets to the derived default name. */
     bool has_name;
-    char name[20];
+    char name[21];
     /* 4..8 ASCII digits. The device ALWAYS has a PIN: it ships with the
  public default "0000" (knowable without any documentation, like every
  Bluetooth device's default); setting a value here replaces it. There is
  no "no PIN" state. Empty string restores the default; absent =
  unchanged. */
     bool has_pin;
-    char pin[8];
+    char pin[9];
     bool has_wifi_enabled;
     bool wifi_enabled;
     /* <= 32 bytes. Empty string clears the SSID. */
     bool has_wifi_ssid;
-    char wifi_ssid[32];
+    char wifi_ssid[33];
     /* <= 63 bytes (WPA2/3 limit). Empty string clears the password. */
     bool has_wifi_password;
-    char wifi_password[63];
+    char wifi_password[64];
     /* Non-zero; 5000 by default. */
     bool has_wifi_port;
     uint32_t wifi_port;
@@ -176,7 +176,7 @@ typedef PB_BYTES_ARRAY_T(4) meshpigeon_Status_wifi_ipv4_t;
 typedef struct _meshpigeon_Status {
     meshpigeon_Status_WifiState wifi_state;
     /* Currently associated SSID; empty when not connected. */
-    char wifi_ssid[32];
+    char wifi_ssid[33];
     /* Station IPv4 address in network byte order, 4 bytes; zeroed when not
  connected. */
     meshpigeon_Status_wifi_ipv4_t wifi_ipv4;
@@ -197,7 +197,7 @@ typedef struct _meshpigeon_Status {
  failures trigger a 1 s delay per further attempt. */
 typedef struct _meshpigeon_Auth {
     /* 4..8 ASCII digits. */
-    char pin[8];
+    char pin[9];
 } meshpigeon_Auth;
 
 /* Clean restart into the persisted configuration. */
@@ -430,17 +430,17 @@ extern const pb_msgdesc_t meshpigeon_Bootloader_msg;
 
 /* Maximum encoded size of messages (where known) */
 #define MESHPIGEON_MESHPIGEON_DEVICE_PB_H_MAX_SIZE meshpigeon_DeviceInfo_size
-#define meshpigeon_Auth_size                     9
+#define meshpigeon_Auth_size                     10
 #define meshpigeon_Bootloader_size               0
-#define meshpigeon_DeviceInfo_size               142
-#define meshpigeon_DeviceSettings_size           126
+#define meshpigeon_DeviceInfo_size               143
+#define meshpigeon_DeviceSettings_size           129
 #define meshpigeon_FactoryReset_size             0
 #define meshpigeon_GetDeviceInfo_size            0
 #define meshpigeon_GetDeviceSettings_size        0
 #define meshpigeon_GetStatus_size                0
 #define meshpigeon_Reboot_size                   0
-#define meshpigeon_SetDeviceSettings_size        135
-#define meshpigeon_Status_size                   76
+#define meshpigeon_SetDeviceSettings_size        139
+#define meshpigeon_Status_size                   77
 #define meshpigeon_StoreInfo_size                24
 
 #ifdef __cplusplus

@@ -22,7 +22,7 @@ class UsbCdcSink : public IFrameSink {
  public:
   void begin(CommandProcessor& proc) {
     proc_ = &proc;
-    proc_->add_sink(this);
+    if (!proc_->add_sink(this)) return;  // registry full: nothing to serve
   }
 
   void send_frame(const uint8_t* decoded, size_t len) override {
@@ -43,7 +43,7 @@ class UsbCdcSink : public IFrameSink {
   }
 
  private:
-  CommandProcessor* proc_ = nullptr;
+  CommandProcessor* proc_ = NULL;
   FrameReader reader_;
   uint8_t frame_[FRAME_MAX_DECODED];
 };
@@ -57,23 +57,21 @@ static const BLEUUID kNusNotifyCharUUID("6E400003-B5A3-F393-E0A9-E50E24DCCA9E");
 /**
  * BLE transport (Nordic-UART-Service-compatible so generic tools work).
  * Supports multiple connected centrals (docs/radio-protocol.md §1); each connection gets its
- * own FrameReader and sink (notifications go only to subscribers).
+ * own FrameReader, but they share one sink — notifications go to every
+ * subscriber, and auth state is per-*transport* (one BLE link, one serial
+ * console), not per-central.
  */
 class BleSink : public IFrameSink, public NimBLEServerCallbacks,
                 public NimBLECharacteristicCallbacks {
  public:
-  void begin(CommandProcessor& proc, const char* base_name) {
+  /** `name` is the effective device name: the stored name, else the derived
+   *  "MeshPigeon-XXXX" (docs/radio-protocol.md §8.3). The core owns that
+   *  derivation — the transport must not compute the suffix a second time. */
+  void begin(CommandProcessor& proc, const char* name) {
     proc_ = &proc;
-    NimBLEDevice::init(base_name);
-    // Distinguish multiple pigeons in scan lists: append the two low bytes of
-    // the BLE address ("MeshPigeon-A3F2"); nRF52 boards use the same scheme.
-    const NimBLEAddress addr = NimBLEDevice::getAddress();
-    const uint8_t* a = addr.getNative();  // little-endian: a[0] is the LSB
-    char device_name[24];
-    snprintf(device_name, sizeof(device_name), "%s-%02X%02X", base_name, a[1],
-             a[0]);
-    NimBLEDevice::setDeviceName(device_name);
-    NimBLEDevice::setMTU(247);
+    if (!proc_->add_sink(this)) return;  // registry full: nothing to serve
+    NimBLEDevice::init(name);
+    NimBLEDevice::setDeviceName(name);
     server_ = NimBLEDevice::createServer();
     server_->setCallbacks(this);
     NimBLEService* svc = server_->createService(kNusServiceUUID);
@@ -84,7 +82,6 @@ class BleSink : public IFrameSink, public NimBLEServerCallbacks,
     svc->start();
     server_->getAdvertising()->addServiceUUID(kNusServiceUUID);
     server_->getAdvertising()->start();
-    proc_->add_sink(this);
   }
 
   // NimBLEServerCallbacks (1.4.x signatures)
@@ -135,6 +132,7 @@ class BleSink : public IFrameSink, public NimBLEServerCallbacks,
   /** Apply a device-settings name: rename and re-advertise (docs/radio-protocol.md §8.3).
    *  Live connections are unaffected; scanners see the new name. */
   void set_name(const char* name) {
+    if (server_ == NULL) return;
     NimBLEDevice::setDeviceName(name);
     server_->getAdvertising()->start();
   }
@@ -159,8 +157,8 @@ class BleSink : public IFrameSink, public NimBLEServerCallbacks,
     return conns_state_.back();
   }
 
-  CommandProcessor* proc_ = nullptr;
-  NimBLEServer* server_ = nullptr;
+  CommandProcessor* proc_ = NULL;
+  NimBLEServer* server_ = NULL;
   NimBLECharacteristic* tx_char_ = nullptr;
   NimBLECharacteristic* rx_char_ = nullptr;
   std::vector<uint16_t> conns_;
@@ -182,28 +180,22 @@ static const uint16_t kAdvFastTimeout = 30;  // seconds
  * the board loop. TX: notify's SoftDevice buffer is only a few packets deep,
  * so frames queue (the app fetches history in 32-packet bursts) and drain as
  * 20-byte chunks — one hvx packet per chunk, retrying in the board loop when
- * the SoftDevice buffer is full. send_frame blocks (draining) only when the
- * queue is full, which cannot deadlock: the SoftDevice drains in its own
- * context, independent of this loop.
+ * the SoftDevice buffer is full. send_frame drains the queue itself when it
+ * is full, but only for a bounded time: a central that has stopped reading
+ * must cost us dropped frames, never a wedged board loop.
  */
 class BleSink : public IFrameSink {
  public:
-  void begin(CommandProcessor& proc, const char* base_name) {
+  /** `name` is the effective device name: the stored name, else the derived
+   *  "MeshPigeon-XXXX" (docs/radio-protocol.md §8.3). The core owns that
+   *  derivation — the transport must not compute the suffix a second time. */
+  void begin(CommandProcessor& proc, const char* name) {
     proc_ = &proc;
     self_ = this;
+    if (!proc_->add_sink(this)) return;  // registry full: nothing to serve
     Bluefruit.configPrphBandwidth(BANDWIDTH_MAX);
     Bluefruit.begin();
-    // Distinguish multiple pigeons in scan lists: append the two low bytes of
-    // the BLE address ("MeshPigeon-A3F2"); matches the ESP32 sink naming.
-    char device_name[24];
-    ble_gap_addr_t addr;
-    if (sd_ble_gap_addr_get(&addr) == NRF_SUCCESS) {
-      snprintf(device_name, sizeof(device_name), "%s-%02X%02X", base_name,
-               addr.addr[1], addr.addr[0]);
-    } else {
-      snprintf(device_name, sizeof(device_name), "%s", base_name);
-    }
-    Bluefruit.setName(device_name);
+    Bluefruit.setName(name);
     Bluefruit.Periph.setConnectCallback(on_connect);
     Bluefruit.Periph.setDisconnectCallback(on_disconnect);
     bleuart.begin();
@@ -214,7 +206,6 @@ class BleSink : public IFrameSink {
     Bluefruit.Advertising.setFastTimeout(kAdvFastTimeout);
     Bluefruit.Advertising.restartOnDisconnect(true);
     Bluefruit.Advertising.start(0);
-    proc_->add_sink(this);
   }
 
   /** Board loop: drain BLE RX into frames, then TX queue into notifications. */
@@ -234,11 +225,12 @@ class BleSink : public IFrameSink {
   }
 
   // IFrameSink: enqueue for the board loop (never writes from a callback
-  // thread; blocks only on a full queue, see class comment).
+  // thread). Bounded wait when full — see make_room().
   void send_frame(const uint8_t* decoded, size_t len) override {
     uint8_t wire[FRAME_MAX_WIRE];
     size_t n = frame_encode_envelope(wire, decoded, len);
-    while (count_ == kQueueDepth) drain_step_blocking();
+    make_room();
+    if (count_ == kQueueDepth) return;  // central not reading: drop this frame
     Queued& q = queue_[(head_ + count_) % kQueueDepth];
     memcpy(q.buf, wire, n);
     q.len = n;
@@ -265,6 +257,10 @@ class BleSink : public IFrameSink {
 
   static const size_t kQueueDepth = 16;
   static const size_t kChunk = 20;  // BLE default MTU (23) minus 3 overhead
+  // How long send_frame waits for room before dropping the frame it was
+  // handed. Long enough for the SoftDevice to absorb a burst, short enough
+  // that a central which has stopped reading cannot stall the board loop.
+  static const uint32_t kDrainWaitMs = 50;
 
   static void on_connect(uint16_t) { if (self_) self_->connected_ = true; }
   static void on_disconnect(uint16_t, uint8_t) {
@@ -291,8 +287,13 @@ class BleSink : public IFrameSink {
     return true;
   }
 
-  void drain_step_blocking() {
-    while (count_ > 0 && !drain_step()) {
+  /** Make room for one more frame: drain for at most kDrainWaitMs, then give
+   *  up and let the caller drop the frame it was handed. The wait is bounded
+   *  because `connected` staying true says nothing about the central still
+   *  consuming notifications. */
+  void make_room() {
+    uint32_t waited = 0;
+    while (count_ > 0 && !drain_step() && waited < kDrainWaitMs) {
       if (!connected()) {
         // Frames for a lost client are useless — drop and stop waiting.
         head_ = 0;
@@ -300,12 +301,14 @@ class BleSink : public IFrameSink {
         return;
       }
       delay(1);
+      waited++;
     }
+    if (count_ == kQueueDepth) count_ = 0;  // still stuck: drop the backlog
   }
 
   static BleSink* self_;
 
-  CommandProcessor* proc_ = nullptr;
+  CommandProcessor* proc_ = NULL;
   // 512 B: two max wire frames — the app streams frames as 20-byte chunks
   // faster than the 1 ms board loop drains, and BLEUart's default FIFO (256 B)
   // would silently overflow mid-frame.

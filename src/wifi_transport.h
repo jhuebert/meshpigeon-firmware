@@ -15,27 +15,30 @@ namespace meshpigeon {
  * Wi-Fi station + multi-client TCP transport (docs/radio-protocol.md §7; ESP32 only — the
  * two ESP32-S3 envs define MESHPIGEON_HAS_WIFI).
  *
- * Lifecycle (§10.1): station mode only, one network, DHCP, applied from the
+ * Lifecycle (§7): station mode only, one network, DHCP, applied from the
  * device settings. Enable -> connect; disable -> disconnect + close the
  * server; credential change while enabled -> reconnect. Retries run on an
  * exponential backoff (5 s doubling to a 2 min cap, forever): a wrong
  * password is not fatal — it surfaces as WIFI_STATE_AUTH_FAIL in Status and
  * the user may have rotated the password.
  *
- * Multi-client TCP (§10.2): one FrameReader + sink per connected socket,
+ * Multi-client TCP (§7): one FrameReader + sink per connected socket,
  * exactly like the simulator's model — CommandProcessor::broadcast delivers
- * async frames to all of them. Default port 5000 (the MeshCore TCP tooling
- * convention), overridable by the wifi_port setting. mDNS advertises
+ * async frames to all of them. The sink registry is shared with the other
+ * transports, so the cap here is whichever runs out first: the per-transport
+ * array below, or a free slot in the CommandProcessor (which the accept path
+ * asks for). Default port 5000 (the MeshCore TCP tooling convention),
+ * overridable by the wifi_port setting. mDNS advertises
  * meshpigeon-<suffix>.local with the meshpigeon TCP service so desktop
  * tooling can discover pigeons without typing IPs.
  *
  * No TLS, no cloud, no outbound connections: the firmware listens, it never
- * dials (§10.2).
+ * dials (§7).
  */
 class WifiTransport {
  public:
   /** `hostname` is the mDNS name ("meshpigeon-A3F2.local"), built from the
-   *  same MAC suffix every other derived identifier uses (§9). */
+   *  same MAC suffix every other derived identifier uses (§8.3). */
   void begin(CommandProcessor& proc, const char* hostname);
 
   /** Board loop: service the state machine, accept and drain sockets. */
@@ -65,6 +68,10 @@ class WifiTransport {
     FrameReader reader;
     uint8_t frame[FRAME_MAX_DECODED];
     bool in_use = false;
+    // A frame could not be written in full: the stream this socket is in the
+    // middle of is no longer trustworthy, so we hang up rather than let the
+    // client see a short burst that still ends in a terminator.
+    bool broken = false;
   };
 
   void connect_start();
@@ -86,7 +93,7 @@ class WifiTransport {
   uint32_t last_attempt_ms_ = 0;
   uint32_t backoff_ms_ = 0;
 
-  static const size_t kMaxClients = 4;  // the sink registry's size
+  static const size_t kMaxClients = 4;  // the documented TCP cap (§7)
   Client clients_[kMaxClients];
   size_t num_clients_ = 0;
 };

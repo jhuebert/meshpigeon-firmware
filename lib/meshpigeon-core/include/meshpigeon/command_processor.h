@@ -20,6 +20,11 @@ namespace meshpigeon {
 class ILoRaRadio {
  public:
   virtual ~ILoRaRadio() {}
+  /** Bring the radio up (SPI, TCXO, RF switch). False if the silicon does
+   *  not answer; the device then reports radio_ok = false and answers
+   *  ERROR_CODE_NO_RADIO. Nothing else needs to know: CommandProcessor::boot
+   *  calls this and owns the result. */
+  virtual bool begin() { return true; }
   /** Apply settings; false if the radio rejects them (out of range etc). */
   virtual bool apply(const RadioSettings& s) = 0;
   /** Start keying up with raw bytes: 0 started, <0 refused (immediate). */
@@ -31,13 +36,17 @@ class ILoRaRadio {
                        int8_t* snr) = 0;
 };
 
-/** Board capability bits (DeviceInfo.capabilities), assembled from board
- *  defines — compile-time facts, never probed at runtime (docs/radio-protocol.md §5). */
+/** How many Capability values DeviceInfo can carry — the generated
+ *  `capabilities` array size (device.options caps it at the same number). */
+static const pb_size_t kMaxCapabilities = 16;
+
+/** Board capability values (DeviceInfo.capabilities), assembled from board
+ *  defines — compile-time facts, never probed at runtime. */
 enum Capability {
-  kCapWifiSta = 0,
-  kCapBattery = 1,
-  kCapBle = 2,
-  kCapUsbCdc = 3,
+  kCapWifiSta = meshpigeon_Capability_CAPABILITY_WIFI_STA,
+  kCapBattery = meshpigeon_Capability_CAPABILITY_BATTERY,
+  kCapBle = meshpigeon_Capability_CAPABILITY_BLE,
+  kCapUsbCdc = meshpigeon_Capability_CAPABILITY_USB_CDC,
 };
 
 /** Board-specific actions the core may request. */
@@ -63,7 +72,8 @@ class IBoardHooks {
   virtual uint8_t usb_cdc_clients() { return 0; }
   /** TCP sockets on the Wi-Fi server, for Status.wifi_tcp_clients. */
   virtual uint8_t wifi_tcp_clients() { return 0; }
-  /** Fill a Status from the board's live link state (Wi-Fi etc.). */
+  /** Fill a Status from the board's live link state (Wi-Fi etc). Must not
+   *  touch the three *_clients counts: those are the core's, it owns them. */
   virtual void fill_status(StatusMessage* status) { (void)status; }
   /** Device settings changed: the link reacts (connect/disconnect/rebind).
    *  No-op on boards without the Wi-Fi capability. */
@@ -73,8 +83,10 @@ class IBoardHooks {
   /** False on boards without station capability: Wi-Fi setting writes are
    *  then rejected atomically with NOT_SUPPORTED (docs/radio-protocol.md §8.1). */
   virtual bool wifi_supported() const { return false; }
-  /** Append this board's capability values; returns the new count. */
-  virtual pb_size_t fill_capabilities(meshpigeon_Capability* out, pb_size_t max) {
+  /** Append this board's capability values; returns the new count. Values
+   *  past `max` are not written and must not be counted. */
+  virtual pb_size_t fill_capabilities(meshpigeon_Capability* out,
+                                      pb_size_t max) {
     (void)out;
     (void)max;
     return 0;
@@ -108,10 +120,16 @@ class CommandProcessor {
 
   void set_hooks(IBoardHooks* hooks) { hooks_ = hooks; }
 
-  void add_sink(IFrameSink* sink);
+  /** Register/unregister a connected client. add_sink returns false when
+   *  the registry is full (kMaxSinks is shared by every transport), so a
+   *  transport can turn the extra client away instead of silently
+   *  broadcasting to nobody. */
+  bool add_sink(IFrameSink* sink);
   void remove_sink(IFrameSink* sink);
 
-  /** Boot: load persisted settings, apply to radio. Returns radio result. */
+  /** Boot: bring the radio up, load the persisted settings and apply them.
+   *  Runs unconditionally — a dead radio still leaves a device that answers,
+   *  with radio_ok = false. Returns the radio result. */
   bool boot();
 
   /** Board loop tick: completes pending TX when the radio finishes. */
@@ -119,8 +137,8 @@ class CommandProcessor {
 
   /**
    * Handle one serialized ClientToRadio envelope from `from`. Builds the
-   * response envelope. `from == NULL` is allowed for tests that only want
-   * the broadcasts.
+   * response envelope. `from` is the connection the request arrived on: it
+   * carries the per-connection auth state, so it is never NULL.
    */
   void on_envelope(const uint8_t* data, size_t len, IFrameSink* from);
 
@@ -138,31 +156,42 @@ class CommandProcessor {
   const DeviceSettings& device_settings() const { return device_; }
   /** Last estimated noise floor in dBm; 0 when nothing has been received. */
   int32_t noise_floor_dbm() const { return noise_floor_dbm_; }
-  uint32_t tx_in_flight() const { return tx_pending_; }
+  /** False once the radio has failed to come up or to accept a tuning. */
+  bool radio_ok() const { return radio_ok_; }
+  bool tx_in_flight() const { return tx_pending_ != 0; }
   size_t sink_count() const { return num_sinks_; }
+  size_t sink_free() const { return kMaxSinks - num_sinks_; }
 
-  /** The effective name: stored, else "MeshPigeon-XXXX" from the MAC (§9). */
+  /** The effective name: stored, else "MeshPigeon-XXXX" from the MAC (§8.3). */
   void effective_name(char out[MESHPIGEON_NAME_MAX + 1]) const;
 
  private:
   void handle_request(const ClientToRadioMessage& req, IFrameSink* from);
-  bool require_auth(const ClientToRadioMessage& req, IFrameSink* from);
-  bool pin_matches(const char* pin, size_t len) const;
-  bool auth_backoff_active() const;
-  void note_auth_failure();
 
   // ---- response building: fill response_, then deliver/broadcast it ----
   void build_radio_settings();
   void build_device_settings();
   void build_status();
+  void build_packet_entry(uint32_t id, const StoredPacket& e);
   void deliver(IFrameSink* to);
-  void broadcast_response(IFrameSink* except);
+  /** Push response_ to every sink but `except`. `authorized_only` restricts
+   *  it to connections that could call the gated operations — required for
+   *  the DeviceSettings push, which carries the Wi-Fi passphrase. */
+  void broadcast_response(IFrameSink* except, bool authorized_only = false);
 
   void send_error(uint32_t id, ErrorCode code, IFrameSink* to);
   void send_ok(uint32_t id, IFrameSink* to);
   void send_pong(uint32_t id, const pb_byte_t* payload, pb_size_t size,
                  IFrameSink* to);
-  void send_device_info(uint32_t id, IFrameSink* to);
+  void send_device_info(uint32_t id, IFrameSink* from);
+  /** true if the client may proceed; otherwise answers AUTH_REQUIRED. */
+  bool require_auth(uint32_t id, IFrameSink* from);
+  /** May this connection see gated material? True when it authenticated, or
+   *  while the device still holds the public default PIN. */
+  bool is_authorized(const IFrameSink* from) const;
+  bool pin_matches(const char* pin, size_t len) const;
+  bool auth_backoff_active() const;
+  void note_auth_failure();
 
   void emit_tx_result(uint32_t seq, bool ok);
   void notify_radio_changed(IFrameSink* except);
@@ -181,10 +210,9 @@ class CommandProcessor {
   char fw_version_[16];
 
   RadioSettings settings_;
-  bool settings_loaded_ = false;
   uint32_t set_count_since_boot_ = 0;
   DeviceSettings device_;
-  bool radio_ok_ = true;
+  bool radio_ok_ = false;
   // RSSI - SNR of the last received packet: the receiver's noise floor as
   // far as the radio can tell us without a dedicated register read. 0 =
   // no measurement yet (DeviceInfo.noise_floor_dbm).
@@ -197,13 +225,15 @@ class CommandProcessor {
 
   uint8_t tx_pending_ = 0;  // a SEND_PACKET is keying up
   uint32_t tx_pending_seq_ = 0;
-  bool tx_start_ok_ = true;
 
   // Scratch for building responses; a member so the ~520-byte encode
   // struct exists once, not per handler.
   RadioToClientMessage response_;
 
-  static const size_t kMaxSinks = 4;  // docs/radio-protocol.md §3: >=3 concurrent clients
+  // One sink per connection, shared by every transport (docs/radio-protocol.md
+  // §3). Sized so an ESP32 board can hold USB + BLE + the documented four
+  // TCP clients at once; the nRF52 boards only ever use two of them.
+  static const size_t kMaxSinks = 6;
   IFrameSink* sinks_[kMaxSinks];
   size_t num_sinks_ = 0;
 };

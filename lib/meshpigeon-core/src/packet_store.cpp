@@ -58,7 +58,6 @@ void PacketStore::pop_oldest() {
 
 uint32_t PacketStore::append(uint64_t uptime_ms, int8_t rssi, int8_t snr,
                              uint8_t flags, const uint8_t* raw, uint8_t len) {
-  if (len > MESHPIGEON_MAX_RAW_PACKET) len = MESHPIGEON_MAX_RAW_PACKET;
   uint32_t need = (uint32_t)(kRecordOverhead + len);
   if (capacity_ == 0 || need > capacity_) {
     dropped_++;  // can never fit this pool — no seq consumed

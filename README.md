@@ -44,7 +44,7 @@ Run the host-side unit tests (no hardware needed — the entire board-neutral
 core is compiled and tested on the desktop):
 
 ```sh
-pio test -e native         # 56 tests: framing, store, settings, envelopes,
+pio test -e native         # 63 tests: framing, store, settings, envelopes,
                            # device settings, auth, status, uptime
 ```
 
@@ -67,9 +67,11 @@ lib/meshpigeon-core/   board-neutral core: framing (COBS+CRC16), packet store,
   src/nanopb/          vendored nanopb 0.4.9 runtime
 src/main.cpp        board main (wires radio + transports + core loop)
 src/radio_sx1262.h  RadioLib SX1262 port (raw bytes only)
+src/radio_lr1110.h  RadioLib LR1110 port (T1000-E)
 src/transports.h    USB CDC + BLE (Nordic UART Service) frame sinks
 src/wifi_transport.*  Wi-Fi station + multi-client TCP + mDNS (ESP32 envs)
 src/sim_main.cpp    desktop simulator (TCP bridge + scriptable RF loss/dup)
+include/meshpigeon/sim_radio.h  SimRadio : ILoRaRadio for the simulator
 test/               host-side unit tests (Unity, run with -e native)
 boards/             custom board definitions (seeed_t114, tracker-t1000-e)
                     + SoftDevice s140 v7 linker script
@@ -109,6 +111,7 @@ See [docs/radio-protocol.md](docs/radio-protocol.md).
 - [ ] A connected app forwards packets; the radio alone never transmits
       without a `SendPacket`.
 - [ ] A custom PIN gates the node, and `Auth` unlocks one connection only.
+- [ ] Rotating the PIN locks every other connection out again.
 - [ ] 3 concurrent BLE clients can fetch history simultaneously.
 - [ ] Coexists with MeshCore repeaters on-air.
 
