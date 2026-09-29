@@ -25,9 +25,9 @@ typedef enum _meshpigeon_Error_ErrorCode {
     meshpigeon_Error_ErrorCode_ERROR_CODE_TX_FAILED = 4,
     /* Radio init failed; the device answers but cannot use the air. */
     meshpigeon_Error_ErrorCode_ERROR_CODE_NO_RADIO = 5,
-    /* Feature absent on this board (capability-gated, plan 13 §7). */
+    /* Feature absent on this board (capability-gated, docs/radio-protocol.md §8.1). */
     meshpigeon_Error_ErrorCode_ERROR_CODE_NOT_SUPPORTED = 6,
-    /* A PIN is set and this client has not authenticated (plan 13 §8). */
+    /* A PIN is set and this client has not authenticated (docs/radio-protocol.md §8.2). */
     meshpigeon_Error_ErrorCode_ERROR_CODE_AUTH_REQUIRED = 7
 } meshpigeon_Error_ErrorCode;
 

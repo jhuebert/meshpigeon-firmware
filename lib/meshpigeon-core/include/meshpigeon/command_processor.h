@@ -32,7 +32,7 @@ class ILoRaRadio {
 };
 
 /** Board capability bits (DeviceInfo.capabilities), assembled from board
- *  defines — compile-time facts, never probed at runtime (plan 13 §5). */
+ *  defines — compile-time facts, never probed at runtime (docs/radio-protocol.md §5). */
 enum Capability {
   kCapWifiSta = 0,
   kCapBattery = 1,
@@ -51,7 +51,7 @@ class IBoardHooks {
   /** Clean restart into the persisted configuration (REBOOT). */
   virtual void reboot() {}
   /** Wipe persisted device settings (not the radio tuning or boot count),
-   *  then reboot — FACTORY_RESET (plan 13 §10.4). */
+   *  then reboot — FACTORY_RESET (docs/radio-protocol.md §10). */
   virtual void factory_reset() {}
   /** The two low MAC bytes every derived identifier shares ("A3F2"). */
   virtual void mac_suffix(char out[5]) { out[0] = 0; }
@@ -67,7 +67,7 @@ class IBoardHooks {
     (void)settings;
   }
   /** False on boards without station capability: Wi-Fi setting writes are
-   *  then rejected atomically with NOT_SUPPORTED (plan 13 §7). */
+   *  then rejected atomically with NOT_SUPPORTED (docs/radio-protocol.md §8.1). */
   virtual bool wifi_supported() const { return false; }
   /** Append this board's capability values; returns the new count. */
   virtual pb_size_t fill_capabilities(meshpigeon_Capability* out, pb_size_t max) {
@@ -193,7 +193,7 @@ class CommandProcessor {
   // struct exists once, not per handler.
   RadioToClientMessage response_;
 
-  static const size_t kMaxSinks = 4;  // 04 §7: >=3 concurrent clients
+  static const size_t kMaxSinks = 4;  // docs/radio-protocol.md §3: >=3 concurrent clients
   IFrameSink* sinks_[kMaxSinks];
   size_t num_sinks_ = 0;
 };

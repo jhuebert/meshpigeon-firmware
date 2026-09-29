@@ -22,11 +22,11 @@
 
 // ---- Limits --------------------------------------------------------------
 // The Semtech SX12xx silicon cap: everything MeshCore and Meshtastic can put
-// on the air (plan 14 §6.4).
+// on the air (docs/radio-protocol.md §2).
 #define MESHPIGEON_MAX_RAW_PACKET 255
 // Biggest serialized envelope we accept in a frame. Sized so a worst-case
 // PacketEntry (255 raw bytes + metadata) plus envelope overhead fits with
-// headroom (plan 14 §3.1). The generated *_size macros top out at 512.
+// headroom (docs/radio-protocol.md §2). The generated *_size macros top out at 512.
 #define MESHPIGEON_MAX_FRAME_PAYLOAD 512
 // Device-settings limits (mirrored by the nanopb .options caps).
 #define MESHPIGEON_NAME_MAX 20

@@ -45,7 +45,7 @@ typedef struct _meshpigeon_GetDeviceInfo {
     char dummy_field;
 } meshpigeon_GetDeviceInfo;
 
-/* Packet store statistics. The store is RAM-only by design (plan 13 §16):
+/* Packet store statistics. The store is RAM-only by design (docs/radio-protocol.md §10):
  capacity is a byte budget, entries are variable-length, and everything here
  describes the volatile ring — a reboot legitimately clears it. */
 typedef struct _meshpigeon_StoreInfo {
@@ -131,7 +131,7 @@ typedef struct _meshpigeon_DeviceSettings {
 } meshpigeon_DeviceSettings;
 
 /* Writes a SUBSET of the device settings: fields left unset are unchanged.
- Applied atomically (plan 13 §6) — one invalid or capability-gated field
+ Applied atomically (docs/radio-protocol.md §8.1) — one invalid or capability-gated field
  rejects the whole request with nothing applied. Persists immediately and
  applies live; the response carries the full post-write DeviceSettings, and
  other connected clients receive an async DeviceSettingsChanged. */

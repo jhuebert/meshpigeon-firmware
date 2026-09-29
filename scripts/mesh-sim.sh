@@ -1,6 +1,6 @@
 #!/bin/sh
 # Boot an N-radio mesh of desktop sims for the app's mesh-scale tests
-# (09-testing §2). Each sim is one dumb radio on its own TCP port; the app's
+# (AGENTS.md). Each sim is one dumb radio on its own TCP port; the app's
 # MeshSimHarness bridges them with the RF loss model.
 #
 #   scripts/mesh-sim.sh [N] [base-port]    # default 3 radios on 8801..8803

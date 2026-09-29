@@ -16,7 +16,7 @@ class IMillisecondClock {
 };
 
 /**
- * Monotonic 64-bit uptime in milliseconds (plan 14 §6): the 32-bit millis()
+ * Monotonic 64-bit uptime in milliseconds (docs/radio-protocol.md §5.1): the 32-bit millis()
  * counter plus a RAM rollover count this class increments whenever it
  * observes the source wrap. Clients pair this with app time once per
  * connection; packets carry the same clock, so every timestamp is plain

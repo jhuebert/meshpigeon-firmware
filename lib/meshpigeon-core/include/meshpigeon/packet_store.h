@@ -15,14 +15,14 @@ namespace meshpigeon {
  *
  * This is the internal storage format, not the wire format: the interface
  * re-encodes each entry as a PacketEntry protobuf message at delivery/fetch
- * time (plan 14 §4), so nothing here constrains the schema.
+ * time (docs/radio-protocol.md §10), so nothing here constrains the schema.
  *
  * On-ring layout (little-endian):
  *   [uptime_ms:u64][seq:u32][rssi:i8][snr:i8][flags:u8][len:u8][raw:len]
  */
 struct StoredPacket {
   uint32_t seq;
-  uint64_t uptime_ms;  // the monotonic 64-bit uptime clock (plan 14 §6)
+  uint64_t uptime_ms;  // the monotonic 64-bit uptime clock (docs/radio-protocol.md §5.1)
   int8_t rssi;
   int8_t snr;
   uint8_t flags;  // 0x01 = sent by us (TX), 0x02 = received

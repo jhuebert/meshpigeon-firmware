@@ -267,7 +267,7 @@ state transitions** (no RSSI churn).
 
 ## 10. Packet store
 
-A byte-budgeted RAM ring (§16 of the design plans): entries cost a 16-byte
+A byte-budgeted RAM ring: entries cost a 16-byte
 header plus their exact payload length, and overflow evicts the oldest. A
 packet larger than the whole pool is dropped and counted in `dropped`.
 
@@ -329,6 +329,5 @@ Deliberately, per the product's guiding principles:
 - Firmware: `github.com/jhuebert/meshpigeon-firmware` (this repo)
 - Schema: `protobufs/meshpigeon/*.proto` in this repo
 - App implementation: `meshpigeon-app :core-transport`
-- Design: `docs/plans/13-device-settings-and-interface-v2.md` (semantics) and
-  `docs/plans/14-protobuf-interface-options.md` (the wire encoding this
-  document replaces)
+- Working on the firmware: `AGENTS.md` (build, layout, conventions, traps)
+- Principles: `GUIDING-PRINCIPLES.md`

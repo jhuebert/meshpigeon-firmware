@@ -4,7 +4,7 @@
  * Boot: load persisted settings, apply to the radio, start listening.
  * Loop: poll the radio for packets (store + live push), drain transports
  * (USB CDC, BLE, Wi-Fi TCP), complete pending TX. No protocol, no keys —
- * the app decides everything (04-firmware).
+ * the app decides everything (docs/radio-protocol.md §12).
  */
 #if defined(MESHPIGEON_ESP32) || defined(MESHPIGEON_NRF52)
 
@@ -114,7 +114,7 @@ class BoardHooks : public IBoardHooks {
 
   void mac_suffix(char out[5]) override {
     // The same two bytes the BLE name uses, so the derived device name and
-    // the advertised name agree (plan 13 §9).
+    // the advertised name agree (docs/radio-protocol.md §8.3).
     char hex[5];
 #if defined(ARDUINO_ARCH_ESP32)
     const NimBLEAddress addr = NimBLEDevice::getAddress();
@@ -378,7 +378,7 @@ class BoardSettingsStore : public SettingsStore {
 
 void BoardHooks::factory_reset() {
   // Device settings only: the radio tuning and the boot count survive
-  // (plan 13 §10.4) — a factory reset is "as it shipped", not "as new".
+  // (docs/radio-protocol.md §10) — a factory reset is "as it shipped", not "as new".
   if (g_settings_store) g_settings_store->wipe_device();
   reboot();
 }
@@ -386,7 +386,7 @@ void BoardHooks::factory_reset() {
 static PacketStore* g_store;
 static BoardHooks g_hooks;
 #if defined(MESHPIGEON_HAS_WIFI)
-// The mDNS name shares the derived device-name suffix (plan 13 §9/§10.2).
+// The mDNS name shares the derived device-name suffix (docs/radio-protocol.md §7).
 static void wifi_hostname(char out[24]) {
   char suffix[5];
   g_hooks.mac_suffix(suffix);
@@ -465,7 +465,7 @@ void setup() {
 
 #if defined(MESHPIGEON_HAS_WIFI)
   // A pigeon on a shelf with Wi-Fi enabled comes back up on the network
-  // with no app attached (plan 13 §10.1).
+  // with no app attached (docs/radio-protocol.md §7).
   if (g_processor->device_settings().wifi_enabled) {
     g_wifi->apply(g_processor->device_settings());
   }
@@ -473,7 +473,7 @@ void setup() {
 
   // The effective name wins at boot too: a stored name is applied to the
   // advertisement, otherwise the derived MeshPigeon-XXXX stands
-  // (plan 13 §9).
+  // (docs/radio-protocol.md §8.3).
   char effective[MESHPIGEON_NAME_MAX + 1];
   g_processor->effective_name(effective);
   g_ble->set_name(effective);

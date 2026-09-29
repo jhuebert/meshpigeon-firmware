@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# MeshPigeon hardware bench (09-testing §3).
+# MeshPigeon hardware bench (AGENTS.md).
 # Rig: two XIAO WIO + one nRF52 board on a powered USB hub.
 # Runs: flash all boards → smoke self-test → app-driven scenario via the
 # desktop simulator bridge; writes a JSON report to reports/.
@@ -23,6 +23,6 @@ echo "== MeshPigeon bench $STAMP =="
 # 4. Soak: 72h listening + store replay equality check (nightly job, not PR)
 
 cat > "$REPORT" <<JSON
-{ "run": "$STAMP", "status": "skeleton", "note": "wire up rig.cfg device paths; see docs/plans/09-testing.md" }
+{ "run": "$STAMP", "status": "skeleton", "note": "wire up rig.cfg device paths" }
 JSON
 echo "wrote $REPORT"

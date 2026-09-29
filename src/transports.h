@@ -56,7 +56,7 @@ static const BLEUUID kNusNotifyCharUUID("6E400003-B5A3-F393-E0A9-E50E24DCCA9E");
 
 /**
  * BLE transport (Nordic-UART-Service-compatible so generic tools work).
- * Supports multiple connected centrals (04 §2); each connection gets its
+ * Supports multiple connected centrals (docs/radio-protocol.md §1); each connection gets its
  * own FrameReader and sink (notifications go only to subscribers).
  */
 class BleSink : public IFrameSink, public NimBLEServerCallbacks,
@@ -132,7 +132,7 @@ class BleSink : public IFrameSink, public NimBLEServerCallbacks,
   /** Board loop: RX is callback-driven and TX immediate — nothing to do. */
   void pump() {}
 
-  /** Apply a device-settings name: rename and re-advertise (plan 13 §9).
+  /** Apply a device-settings name: rename and re-advertise (docs/radio-protocol.md §8.3).
    *  Live connections are unaffected; scanners see the new name. */
   void set_name(const char* name) {
     NimBLEDevice::setDeviceName(name);
@@ -246,7 +246,7 @@ class BleSink : public IFrameSink {
     count_++;
   }
 
-  /** Apply a device-settings name: rename and re-advertise (plan 13 §9).
+  /** Apply a device-settings name: rename and re-advertise (docs/radio-protocol.md §8.3).
    *  Live connections are unaffected; scanners see the new name. */
   void set_name(const char* name) {
     Bluefruit.setName(name);

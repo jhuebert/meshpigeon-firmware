@@ -4,7 +4,7 @@
  * A stand-in for a real radio on the bench: runs the identical board-neutral
  * command core behind a TCP bridge, with scriptable RF loss/duplicate
  * behavior. The app's CI drives full pipelines against this instead of
- * hardware (09-testing §2).
+ * hardware (AGENTS.md).
  *
  * Build:  pio run -e sim
  * Run:    .pio/build/sim/meshpigeon-sim --port 8765 [--loss 10] [--dup 5]
@@ -42,7 +42,7 @@ static CommandProcessor* g_processor = NULL;
 static bool g_fake_wifi = false;
 
 // --fake-wifi: a scripted OFF -> CONNECTING -> CONNECTED state machine so
-// app CI can drive the Status/wifi paths without hardware (plan 13 §14.3.1).
+// app CI can drive the Status/wifi paths without hardware (AGENTS.md).
 static meshpigeon_Status_WifiState g_fake_state =
     meshpigeon_Status_WifiState_WIFI_STATE_OFF;
 static uint32_t g_fake_changed_ms = 0;

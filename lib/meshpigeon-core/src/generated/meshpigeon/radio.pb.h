@@ -88,7 +88,7 @@ typedef struct _meshpigeon_FetchPackets {
 typedef PB_BYTES_ARRAY_T(255) meshpigeon_PacketEntry_raw_t;
 /* One retained packet: raw on-air bytes plus reception metadata. The firmware
  cannot read the payload — raw is all it keeps (that is what maximizes
- capacity, plan 04 §1.1). */
+ capacity, docs/radio-protocol.md §10). */
 typedef struct _meshpigeon_PacketEntry {
     /* Monotonic store id; never reused across wraps or purges. */
     uint32_t seq;

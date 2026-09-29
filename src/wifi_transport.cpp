@@ -93,7 +93,7 @@ void WifiTransport::start_server() {
   server_->begin();
   server_up_ = true;
   // mDNS: meshpigeon-A3F2.local, so desktop tooling finds the pigeon
-  // without typing an IP (plan 13 §10.2).
+  // without typing an IP (docs/radio-protocol.md §7).
   if (!MDNS.begin(hostname_)) return;
   MDNS.addService("meshpigeon", "tcp", port_);
 }
@@ -163,7 +163,7 @@ void WifiTransport::drop_client(size_t index) {
 
 void WifiTransport::pump() {
   if (!settings_.wifi_enabled || settings_.wifi_ssid[0] == 0) {
-    // A disabled link closes everything it opened (plan 13 §10.1); the
+    // A disabled link closes everything it opened (docs/radio-protocol.md §7); the
     // disconnect path in apply() already did that.
     return;
   }

@@ -12,7 +12,7 @@ namespace meshpigeon {
 /**
  * Radio settings — the only opinionated thing the firmware holds, and the
  * only thing it persists. Applied at boot so a lone radio resumes
- * listening with no app attached (04-firmware §1.4).
+ * listening with no app attached (docs/radio-protocol.md §6).
  *
  * Serialized layout (little-endian, 17 bytes + 2-byte CRC16 over the 15
  * leading bytes... see serialize()):
@@ -47,7 +47,7 @@ struct RadioSettings {
 };
 
 /**
- * Device settings (plan 13 §6): the advertised name, the PIN that gates use
+ * Device settings (docs/radio-protocol.md §8.1): the advertised name, the PIN that gates use
  * of the node, and the Wi-Fi station. Everything here is device-level —
  * no mesh concept lives in it.
  *
@@ -89,7 +89,7 @@ struct DeviceSettings {
   bool operator!=(const DeviceSettings& o) const { return !(*this == o); }
 
   /** One field of a SetDeviceSettings request, validated against the rules
-   *  in plan 13 §6. Rejects the whole request atomically on any failure. */
+   *  in docs/radio-protocol.md §8.1. Rejects the whole request atomically on any failure. */
   static bool valid_name(const char* s, size_t len) {
     return s != NULL && len <= MESHPIGEON_NAME_MAX;
   }

@@ -3,9 +3,8 @@
 // Part of the authoritative wire specification for the MeshPigeon radio
 // firmware (see envelope.proto for framing and the evolution policy).
 //
-// Semantics are normative in docs/plans/13-device-settings-and-interface-v2.md
-// and docs/radio-protocol.md: the first-owner lock (§7.1 of the protocol doc),
-// the raw-bytes-only store, and the RAM-only guarantee (plan 13 §16 — no
+// Semantics are normative in docs/radio-protocol.md: the first-owner lock
+// (§6.1), the raw-bytes-only store, and the RAM-only guarantee (§10 — no
 // packet bytes are ever written to flash).
 
 syntax = "proto3";
@@ -93,7 +92,7 @@ message FetchPackets {
 
 // One retained packet: raw on-air bytes plus reception metadata. The firmware
 // cannot read the payload — raw is all it keeps (that is what maximizes
-// capacity, plan 04 §1.1).
+// capacity, docs/radio-protocol.md §10).
 message PacketEntry {
   // Monotonic store id; never reused across wraps or purges.
   uint32 seq = 1;

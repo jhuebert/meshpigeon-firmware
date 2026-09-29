@@ -8,7 +8,7 @@
 
 namespace meshpigeon {
 
-static const uint32_t kFirstOwnerGraceMs = 5 * 60 * 1000;  // 05 §3
+static const uint32_t kFirstOwnerGraceMs = 5 * 60 * 1000;  // docs/radio-protocol.md §6.1
 static const uint8_t kFlagsSent = 0x01;
 static const uint8_t kFlagsReceived = 0x02;
 static const uint8_t kAuthFailsBeforeDelay = 3;
@@ -76,7 +76,7 @@ bool CommandProcessor::boot() {
 }
 
 bool CommandProcessor::first_owner_lock_active() const {
-  // 05 §3: during the grace window after boot, only the first SET_RADIO is
+  // docs/radio-protocol.md §6.1: during the grace window after boot, only the first SET_RADIO is
   // honored — the first-connected client owns the tuning decision.
   return set_count_since_boot_ >= 1 && clock_.uptime_ms64() < kFirstOwnerGraceMs;
 }
@@ -142,7 +142,7 @@ void CommandProcessor::build_device_settings() {
   m.wifi_password[sizeof(m.wifi_password) - 1] = 0;
   m.wifi_port = device_.wifi_port;
   // The PIN is write-only on the wire: no field of DeviceSettingsMessage
-  // carries it, and none ever will (plan 14 §3.1).
+  // carries it, and none ever will (docs/radio-protocol.md §2).
 }
 
 void CommandProcessor::build_status() {
@@ -311,7 +311,7 @@ void CommandProcessor::handle_request(const ClientToRadioMessage& req,
       const RadioSettingsMessage& m = req.body.set_radio_settings.settings;
       RadioSettings s;
       s.version = RadioSettings::kSerializedVersion;
-      s.region = 0;  // the region-preset concept is gone (plan 14 §6.3)
+      s.region = 0;  // the region-preset concept is gone (docs/radio-protocol.md §6)
       s.freq_hz = m.freq_hz;
       // Plain Hz on the wire, 0.01 kHz units internally (10 Hz steps).
       s.bw_x100khz = (uint16_t)(m.bandwidth_hz / 10);
@@ -336,9 +336,9 @@ void CommandProcessor::handle_request(const ClientToRadioMessage& req,
       }
       s.config_epoch = settings_.config_epoch + 1;
       settings_ = s;
-      settings_store_.save(s);  // persists on every SET_RADIO (04 §1.4)
+      settings_store_.save(s);  // persists on every SET_RADIO (docs/radio-protocol.md §6)
       set_count_since_boot_++;
-      // Multi-client: everyone else learns about the change (05 §3).
+      // Multi-client: everyone else learns about the change (docs/radio-protocol.md §6.1).
       notify_radio_changed(from);
       response_ = RadioToClientMessage_init_zero;
       response_.id = req.id;
@@ -358,7 +358,7 @@ void CommandProcessor::handle_request(const ClientToRadioMessage& req,
       }
       if (tx_pending_ != 0) {
         // One TX at a time: the radio keys up serially. Report busy; the
-        // app's outbox owns retry policy (04 §1.2).
+        // app's outbox owns retry policy (docs/radio-protocol.md §10).
         send_error(req.id, meshpigeon_Error_ErrorCode_ERROR_CODE_BUSY, from);
         return;
       }
@@ -442,7 +442,7 @@ void CommandProcessor::handle_request(const ClientToRadioMessage& req,
       bool wifi_touched = m.has_wifi_enabled || m.has_wifi_ssid ||
                           m.has_wifi_password || m.has_wifi_port;
       // Validate everything first: one bad field rejects the whole request
-      // with nothing applied (plan 13 §6).
+      // with nothing applied (docs/radio-protocol.md §8.1).
       if ((m.has_name &&
            !DeviceSettings::valid_name(m.name, strlen(m.name))) ||
           (m.has_pin && !DeviceSettings::valid_pin(m.pin, strlen(m.pin))) ||
@@ -459,7 +459,7 @@ void CommandProcessor::handle_request(const ClientToRadioMessage& req,
       if (wifi_touched && hooks_ != NULL && !hooks_->wifi_supported()) {
         // Capability-gated: the board would never honor these; reject
         // atomically so a stale client can't leave a dead setting behind
-        // (plan 13 §7).
+        // (docs/radio-protocol.md §8.1).
         send_error(req.id, meshpigeon_Error_ErrorCode_ERROR_CODE_NOT_SUPPORTED,
                    from);
         return;
@@ -486,7 +486,7 @@ void CommandProcessor::handle_request(const ClientToRadioMessage& req,
       }
       if (m.has_wifi_port) next.wifi_port = (uint16_t)m.wifi_port;
       device_ = next;
-      settings_store_.save_device(device_);  // persists immediately (04 §1.4)
+      settings_store_.save_device(device_);  // persists immediately (docs/radio-protocol.md §6)
       if (m.has_name && hooks_) {            // rename + re-advertise (§9)
         char effective[MESHPIGEON_NAME_MAX + 1];
         effective_name(effective);
@@ -504,7 +504,7 @@ void CommandProcessor::handle_request(const ClientToRadioMessage& req,
 
     case kOpGetStatus: {
       // Readable on every transport, auth or not: this is how a client on
-      // BLE learns what the Wi-Fi is doing (plan 13 §11).
+      // BLE learns what the Wi-Fi is doing (docs/radio-protocol.md §9).
       response_ = RadioToClientMessage_init_zero;
       response_.id = req.id;
       build_status();
@@ -544,7 +544,7 @@ void CommandProcessor::handle_request(const ClientToRadioMessage& req,
       if (!require_auth(req, from)) return;
       device_.clear();
       settings_store_.save_device(device_);
-      store_.clear();  // history too: "as it shipped" (plan 13 §10.4)
+      store_.clear();  // history too: "as it shipped" (docs/radio-protocol.md §10)
       send_ok(req.id, from);
       if (hooks_) hooks_->factory_reset();  // wipe persistence, then reboot
       return;
@@ -563,7 +563,7 @@ uint32_t CommandProcessor::on_packet_received(int8_t rssi, int8_t snr,
   if (len > MESHPIGEON_MAX_RAW_PACKET) len = MESHPIGEON_MAX_RAW_PACKET;
   uint32_t seq =
       store_.append(clock_.uptime_ms64(), rssi, snr, kFlagsReceived, raw, len);
-  // Live push while connected (04 §4), id = 0.
+  // Live push while connected (docs/radio-protocol.md §10), id = 0.
   response_ = RadioToClientMessage_init_zero;
   response_.id = 0;
   response_.which_body = meshpigeon_RadioToClient_packet_entry_tag;

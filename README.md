@@ -74,8 +74,15 @@ test/               host-side unit tests (Unity, run with -e native)
 boards/             custom board definitions (seeed_t114, tracker-t1000-e)
                     + SoftDevice s140 v7 linker script
 docs/               radio-protocol.md — the versioned command contract
-docs/plans/         founding plan documents
+AGENTS.md           how to work in this repo: build, layout, conventions, traps
 ```
+
+## Working on this repo
+
+Read [AGENTS.md](AGENTS.md) first: the dumb-radio review gate, the interface
+summary, the layout, the build/test commands, and the traps this codebase
+already knows about. It is kept in step with this README and
+`docs/radio-protocol.md`.
 
 ## The interface is protobuf
 

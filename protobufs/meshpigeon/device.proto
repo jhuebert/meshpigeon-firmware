@@ -4,8 +4,8 @@
 // firmware (see envelope.proto for framing and the evolution policy).
 //
 // Semantics for every message in this file are normative in
-// docs/plans/13-device-settings-and-interface-v2.md (§6–§11): defaults,
-// atomicity, capability rejection, the PIN/auth model, factory-reset scope.
+// docs/radio-protocol.md: defaults, atomicity, capability rejection,
+// the PIN/auth model, and the factory-reset scope.
 
 syntax = "proto3";
 
@@ -79,7 +79,7 @@ message DeviceInfo {
   bool auth_required = 11;
 }
 
-// Packet store statistics. The store is RAM-only by design (plan 13 §16):
+// Packet store statistics. The store is RAM-only by design (docs/radio-protocol.md §10):
 // capacity is a byte budget, entries are variable-length, and everything here
 // describes the volatile ring — a reboot legitimately clears it.
 message StoreInfo {
@@ -148,7 +148,7 @@ message DeviceSettings {
 }
 
 // Writes a SUBSET of the device settings: fields left unset are unchanged.
-// Applied atomically (plan 13 §6) — one invalid or capability-gated field
+// Applied atomically (docs/radio-protocol.md §8.1) — one invalid or capability-gated field
 // rejects the whole request with nothing applied. Persists immediately and
 // applies live; the response carries the full post-write DeviceSettings, and
 // other connected clients receive an async DeviceSettingsChanged.

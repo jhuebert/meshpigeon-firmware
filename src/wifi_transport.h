@@ -12,7 +12,7 @@
 namespace meshpigeon {
 
 /**
- * Wi-Fi station + multi-client TCP transport (plan 13 §10; ESP32 only — the
+ * Wi-Fi station + multi-client TCP transport (docs/radio-protocol.md §7; ESP32 only — the
  * two ESP32-S3 envs define MESHPIGEON_HAS_WIFI).
  *
  * Lifecycle (§10.1): station mode only, one network, DHCP, applied from the
