@@ -82,6 +82,11 @@ class WifiTransport {
   void accept_clients();
   void pump_clients();
   void drop_client(size_t index);
+  /** Is there a network to be on? Both apply() and pump() key off this, so
+   *  "enabled" and "actually usable" cannot drift apart. */
+  bool usable() const {
+    return settings_.wifi_enabled && settings_.wifi_ssid[0] != 0;
+  }
 
   CommandProcessor* proc_ = nullptr;
   DeviceSettings settings_;

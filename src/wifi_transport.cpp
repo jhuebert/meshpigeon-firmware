@@ -36,43 +36,39 @@ void WifiTransport::begin(CommandProcessor& proc, const char* hostname) {
 }
 
 void WifiTransport::apply(const DeviceSettings& settings) {
-  bool was_enabled = settings_.wifi_enabled;
-  char prev_ssid[MESHPIGEON_SSID_MAX + 1];
-  strncpy(prev_ssid, settings_.wifi_ssid, sizeof(prev_ssid));
-  prev_ssid[sizeof(prev_ssid) - 1] = 0;
-  char prev_pass[MESHPIGEON_PASS_MAX + 1];
-  strncpy(prev_pass, settings_.wifi_password, sizeof(prev_pass));
-  prev_pass[sizeof(prev_pass) - 1] = 0;
-  uint16_t prev_port = port_;
+  // Compare against what is in force *before* overwriting it, so no
+  // before/after copies of the credentials are needed.
+  const bool was_enabled = settings_.wifi_enabled;
+  const bool credentials_changed =
+      strcmp(settings_.wifi_ssid, settings.wifi_ssid) != 0 ||
+      strcmp(settings_.wifi_password, settings.wifi_password) != 0;
+  const uint16_t new_port = settings.wifi_port == 0
+                                ? MESHPIGEON_WIFI_PORT_DEFAULT
+                                : settings.wifi_port;
+  const bool port_changed = new_port != port_;
 
   settings_ = settings;
-  if (settings_.wifi_port == 0) settings_.wifi_port = MESHPIGEON_WIFI_PORT_DEFAULT;
+  settings_.wifi_port = new_port;
+  port_ = new_port;  // Status reports the configured port, up or down
 
-  if (!settings_.wifi_enabled) {
+  if (!usable()) {
+    // Disabled, or enabled with nothing to associate with: the link cannot
+    // serve, so tear down one that is still up rather than leaving the node
+    // quietly associated with a network it can no longer reach.
     if (was_enabled) {
       stop_server();  // drops the sockets too
       disconnect();
     }
     return;
   }
-  if (settings_.wifi_ssid[0] == 0) return;  // enabled but unconfigured: OFF
-
-  bool credentials_changed = strcmp(prev_ssid, settings_.wifi_ssid) != 0 ||
-                            strcmp(prev_pass, settings_.wifi_password) != 0;
   if (!was_enabled || credentials_changed) {
     // New network, new credentials, or newly enabled: rebind from scratch.
     stop_server();
     disconnect();
-    backoff_ms_ = 0;
-    last_attempt_ms_ = 0;
-    port_ = settings_.wifi_port;
     connect_start();
     return;
   }
-  if (settings_.wifi_port != prev_port) {
-    port_ = settings_.wifi_port;
-    if (server_up_) start_server();  // rebind the listener
-  }
+  if (port_changed && server_up_) start_server();  // rebind the listener
 }
 
 void WifiTransport::connect_start() {
@@ -81,7 +77,10 @@ void WifiTransport::connect_start() {
   WiFi.setSleep(false);  // the radio is the point; don't nap the link
   WiFi.begin(settings_.wifi_ssid, settings_.wifi_password);
   last_attempt_ms_ = millis();
-  if (backoff_ms_ == 0) backoff_ms_ = kBackoffStartMs;
+  // A fresh attempt ladder: 5 s, doubling to the 2 min cap. Seeding this
+  // is what makes the doubling in pump() actually grow — a zero seed
+  // doubles to zero and retries on every board-loop tick.
+  backoff_ms_ = kBackoffStartMs;
 }
 
 void WifiTransport::disconnect() {
@@ -124,7 +123,15 @@ void WifiTransport::accept_clients() {
   if (!c) return;
   for (size_t i = 0; i < kMaxClients; i++) {
     if (clients_[i].in_use) continue;
-    if (proc_ == NULL || proc_->sink_free() == 0) return;  // shared registry
+    if (proc_ == NULL || proc_->sink_free() == 0) {
+      // The sink registry is shared by every transport and is full: turn
+      // this one away rather than accept a connection nothing will ever be
+      // sent to. Stopping it matters as much as refusing it — an accepted
+      // WiFiServer client that is never closed keeps a slot of its own, and
+      // stays a connected-but-silent peer on the radio's port.
+      c.stop();
+      return;
+    }
     clients_[i].client.stop();
     clients_[i].client = c;
     clients_[i].reader.reset();
@@ -171,16 +178,17 @@ void WifiTransport::drop_client(size_t index) {
 }
 
 void WifiTransport::pump() {
-  if (!settings_.wifi_enabled || settings_.wifi_ssid[0] == 0) {
-    // A disabled link closes everything it opened (docs/radio-protocol.md §7); the
-    // disconnect path in apply() already did that.
-    return;
-  }
+  // A disabled or unconfigured link closes everything it opened; apply() has
+  // already done that, so there is nothing left to drive (docs §7).
+  if (!usable()) return;
   if (state_ == State::CONNECTED) {
     if (WiFi.status() != WL_CONNECTED) {
       stop_server();
       set_state(State::CONNECTING);
-      backoff_ms_ = 0;
+      // The link dropped: start the attempt ladder over, from the documented
+      // 5 s floor, so the retry loop below backs off instead of spinning.
+      last_attempt_ms_ = millis();
+      backoff_ms_ = kBackoffStartMs;
     }
   }
   if (state_ == State::CONNECTING || state_ == State::AUTH_FAIL ||
@@ -200,7 +208,12 @@ void WifiTransport::pump() {
       }
       if (millis() - last_attempt_ms_ >= backoff_ms_) {
         last_attempt_ms_ = millis();
-        if (backoff_ms_ < kBackoffMaxMs) backoff_ms_ *= 2;
+        // Exponential backoff: 5 s doubling to a 2 min cap, forever. The
+        // zero case can only be reached by a path that forgot to seed it;
+        // floor it rather than doubling zero into an immediate retry storm.
+        if (backoff_ms_ < kBackoffMaxMs) {
+          backoff_ms_ = backoff_ms_ ? backoff_ms_ * 2 : kBackoffStartMs;
+        }
         if (backoff_ms_ > kBackoffMaxMs) backoff_ms_ = kBackoffMaxMs;
         WiFi.begin(settings_.wifi_ssid, settings_.wifi_password);
       }

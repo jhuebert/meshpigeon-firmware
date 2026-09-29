@@ -211,10 +211,17 @@ int main(int argc, char** argv) {
       if (FD_ISSET(server, &fds)) {
         int fd = accept(server, NULL, NULL);
         if (fd >= 0) {
+          // add_sink() shares one bounded registry across every transport,
+          // so it can say no: turn the client away rather than leaving a
+          // connected peer the sim will never send a frame to.
           Client* c = new Client(fd);
-          clients.push_back(c);
-          g_processor->add_sink(c);
-          g_tcp_clients = clients.size();
+          if (!g_processor->add_sink(c)) {
+            close(fd);
+            delete c;
+          } else {
+            clients.push_back(c);
+            g_tcp_clients = clients.size();
+          }
         }
       }
       for (size_t i = 0; i < clients.size();) {

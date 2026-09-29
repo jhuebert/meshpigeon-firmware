@@ -26,8 +26,6 @@
 
 #if defined(MESHPIGEON_ESP32)
 #include <esp_system.h>
-#else
-#include <Adafruit_LittleFS.h>
 #endif
 
 using namespace meshpigeon;
@@ -181,8 +179,11 @@ class BoardHooks : public IBoardHooks {
     // nothing that can fail at runtime (docs/radio-protocol.md §5).
     pb_size_t n = 0;
     auto add = [&](Capability c) {
-      if (n < max) out[n] = static_cast<meshpigeon_Capability>(c);
-      n++;
+      // `max` is the contract: a value that does not fit is neither written
+      // nor counted. Counting it anyway is how a board ends up advertising
+      // CAPABILITY_UNSPECIFIED for capabilities it actually has.
+      if (n >= max) return;
+      out[n++] = static_cast<meshpigeon_Capability>(c);
     };
     if (wifi_supported()) add(kCapWifiSta);
 #if defined(MESHPIGEON_PIN_VBAT_ADC) || defined(MESHPIGEON_BOARD_T1000E)

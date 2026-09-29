@@ -87,11 +87,16 @@ class BleSink : public IFrameSink, public NimBLEServerCallbacks,
   // NimBLEServerCallbacks (1.4.x signatures)
   void onConnect(NimBLEServer* server, ble_gap_conn_desc* desc) override {
     (void)server;
-    conns_.push_back(desc->conn_handle);
+    PerConn c;
+    c.handle = desc->conn_handle;
+    conns_.push_back(c);
   }
   void onDisconnect(NimBLEServer* server, ble_gap_conn_desc* desc) override {
+    // The state goes with the connection. Each PerConn carries a FrameReader
+    // and a frame buffer (~1 KB), so leaving them behind would grow the heap
+    // by that much per connect/disconnect cycle for the life of the boot.
     for (size_t i = 0; i < conns_.size(); i++) {
-      if (conns_[i] == desc->conn_handle) {
+      if (conns_[i].handle == desc->conn_handle) {
         conns_.erase(conns_.begin() + i);
         break;
       }
@@ -148,21 +153,22 @@ class BleSink : public IFrameSink, public NimBLEServerCallbacks,
   };
 
   PerConn& reader_for(uint16_t handle) {
-    for (PerConn& c : conns_state_) {
+    for (PerConn& c : conns_) {
       if (c.handle == handle) return c;
     }
     PerConn c;
     c.handle = handle;
-    conns_state_.push_back(c);
-    return conns_state_.back();
+    conns_.push_back(c);
+    return conns_.back();
   }
 
   CommandProcessor* proc_ = NULL;
   NimBLEServer* server_ = NULL;
   NimBLECharacteristic* tx_char_ = nullptr;
   NimBLECharacteristic* rx_char_ = nullptr;
-  std::vector<uint16_t> conns_;
-  std::vector<PerConn> conns_state_;
+  // One entry per connected central: the handle plus the frame state that
+  // belongs to it. A single vector, so the two cannot fall out of step.
+  std::vector<PerConn> conns_;
 };
 
 #elif defined(MESHPIGEON_NRF52)
