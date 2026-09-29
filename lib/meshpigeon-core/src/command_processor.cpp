@@ -493,7 +493,7 @@ void CommandProcessor::handle_request(const ClientToRadioMessage& req,
     }
 
     case kOpBootloader: {
-      // Always allowed: DFU must be reachable on a locked device (§8.2).
+      // Always allowed: flashing must be reachable on a locked device (§8.2).
       send_ok(req.id, from);
       if (hooks_) hooks_->reboot_to_bootloader();
       return;

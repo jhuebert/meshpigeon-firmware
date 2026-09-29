@@ -71,6 +71,7 @@ static void reboot_now() {
   NVIC_SystemReset();
 #endif
 }
+
 class BoardHooks : public IBoardHooks {
  public:
   uint16_t battery_mv() override {
