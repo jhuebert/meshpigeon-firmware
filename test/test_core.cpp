@@ -322,7 +322,9 @@ void test_frame_reader_drops_a_body_longer_than_any_frame() {
   // FRAME_MAX_DECODED. Such a frame must be dropped, not decoded past the
   // caller's buffer.
   uint8_t dec[FRAME_MAX_DECODED + 8];
-  size_t dlen = frame_build(dec, nullptr, FRAME_MAX_DECODED - 1);  // 515 bytes
+  uint8_t big_envelope[FRAME_MAX_DECODED];
+  memset(big_envelope, 0, sizeof(big_envelope));
+  size_t dlen = frame_build(dec, big_envelope, FRAME_MAX_DECODED - 1);  // 515
   TEST_ASSERT_EQUAL(FRAME_MAX_DECODED + 1, dlen);
   uint8_t wire[FRAME_MAX_WIRE];
   size_t wl = frame_encode_wire(wire, dec, dlen);
@@ -342,7 +344,8 @@ void test_frame_reader_drops_a_body_longer_than_any_frame() {
   }
   // ...and the reader recovers: the next good frame still decodes.
   uint8_t good[16];
-  size_t glen = frame_build(good, nullptr, 0);
+  uint8_t empty = 0;
+  size_t glen = frame_build(good, &empty, 0);
   uint8_t gwire[FRAME_MAX_WIRE];
   size_t gwl = frame_encode_wire(gwire, good, glen);
   for (size_t i = 0; i < gwl; i++) res = r.feed(gwire[i], guarded.buf);
@@ -390,7 +393,8 @@ void test_frame_reader_stream() {
 
 void test_frame_reader_bad_crc_dropped() {
   uint8_t built[16];
-  size_t n = frame_build(built, nullptr, 0);
+  uint8_t empty = 0;
+  size_t n = frame_build(built, &empty, 0);
   built[0] ^= 0xFF;  // corrupt
   uint8_t wire[FRAME_MAX_WIRE];
   size_t wl = frame_encode_wire(wire, built, n);
@@ -403,7 +407,8 @@ void test_frame_reader_bad_crc_dropped() {
 
 void test_frame_reader_ignores_garbage_between_frames() {
   uint8_t built[16];
-  size_t n = frame_build(built, nullptr, 0);
+  uint8_t empty = 0;
+  size_t n = frame_build(built, &empty, 0);
   uint8_t wire[FRAME_MAX_WIRE];
   size_t wl = frame_encode_wire(wire, built, n);
 
@@ -641,6 +646,45 @@ void test_store_randomized_matches_model() {
 
 // ---- tests: settings -----------------------------------------------------------
 
+void test_cobs_encoder_spans_runs_and_zeros() {
+  // CobsEncoder is a streaming state machine, so the two boundaries a
+  // buffer-to-buffer encoder never sees are the interesting ones: a run
+  // exactly at the 254-byte block limit, and data that is nothing but
+  // zeros. Both must round-trip.
+  uint8_t src[600];
+  for (size_t i = 0; i < sizeof(src); i++) {
+    src[i] = (i % 255 == 0) ? 0 : (uint8_t)(i * 7 + 1);
+  }
+  uint8_t enc[sizeof(src) * 2];
+  size_t n = cobs_encode(enc, src, sizeof(src));
+  uint8_t dec[sizeof(src) * 2];
+  size_t m = cobs_decode(dec, enc, n, sizeof(dec));
+  TEST_ASSERT_EQUAL(sizeof(src), m);
+  TEST_ASSERT_EQUAL_MEMORY(src, dec, sizeof(src));
+
+  // 254 non-zero bytes in a row fills a block exactly: code byte 0xFF, and
+  // the empty run that follows it is closed too (one wasted byte, bounded by
+  // FRAME_MAX_WIRE and decoded away).
+  memset(src, 0x5A, 254);
+  n = cobs_encode(enc, src, 254);
+  TEST_ASSERT_EQUAL(256, n);
+  TEST_ASSERT_EQUAL(0xFF, enc[0]);
+  TEST_ASSERT_EQUAL(0x01, enc[255]);
+  m = cobs_decode(dec, enc, n, sizeof(dec));
+  TEST_ASSERT_EQUAL(254, m);
+  TEST_ASSERT_EQUAL_MEMORY(src, dec, 254);
+  // ...and one byte more spills into a second block.
+  src[254] = 0x5A;
+  n = cobs_encode(enc, src, 255);
+  TEST_ASSERT_EQUAL(257, n);
+  TEST_ASSERT_EQUAL(0xFF, enc[0]);
+  TEST_ASSERT_EQUAL(0x02, enc[255]);
+  TEST_ASSERT_EQUAL(0x5A, enc[256]);
+  m = cobs_decode(dec, enc, n, sizeof(dec));
+  TEST_ASSERT_EQUAL(255, m);
+  TEST_ASSERT_EQUAL_MEMORY(src, dec, 255);
+}
+
 void test_settings_serialize_roundtrip() {
   RadioSettings s = make_settings(3, 42);
   uint8_t buf[RadioSettings::kSerializedSize];
@@ -657,6 +701,52 @@ void test_settings_corrupt_crc_rejected() {
   buf[2] ^= 0xFF;
   RadioSettings t;
   TEST_ASSERT_FALSE(t.deserialize(buf, sizeof(buf)));
+}
+
+void test_device_settings_record_roundtrips() {
+  // The nRF52 boards keep the device settings in one fixed-layout record
+  // with a version byte and a trailing CRC16. The format lives in the core
+  // (so every board writes the same bytes and the host tests can reach it),
+  // and it carries the PIN and the Wi-Fi passphrase — so a corrupt record
+  // has to fall back to defaults rather than load a half-valid credential.
+  DeviceSettings d = DeviceSettings::defaults();
+  strcpy(d.name, "attic-pigeon");
+  strcpy(d.pin, "12345678");
+  d.wifi_enabled = true;
+  strcpy(d.wifi_ssid, "home-net");
+  strcpy(d.wifi_password, "hunter2");
+  d.wifi_port = 5100;
+
+  uint8_t buf[DeviceSettings::kSerializedSize];
+  d.serialize(buf);
+  DeviceSettings t;
+  TEST_ASSERT_TRUE(t.deserialize(buf, sizeof(buf)));
+  TEST_ASSERT_TRUE(t == d);
+  TEST_ASSERT_EQUAL_STRING("attic-pigeon", t.name);
+  TEST_ASSERT_EQUAL_STRING("12345678", t.pin);
+  TEST_ASSERT_EQUAL_STRING("home-net", t.wifi_ssid);
+  TEST_ASSERT_EQUAL_STRING("hunter2", t.wifi_password);
+  TEST_ASSERT_EQUAL(5100, t.wifi_port);
+
+  // A single flipped byte anywhere in the record is a rejected record.
+  for (size_t i = 0; i < sizeof(buf); i++) {
+    uint8_t corrupt[DeviceSettings::kSerializedSize];
+    memcpy(corrupt, buf, sizeof(buf));
+    corrupt[i] ^= 0xFF;
+    TEST_ASSERT_FALSE_MESSAGE(t.deserialize(corrupt, sizeof(corrupt)),
+                              "a corrupt record must not be accepted");
+  }
+  // A truncated record (an interrupted write) reads as "never written".
+  DeviceSettings t2;
+  TEST_ASSERT_FALSE(t2.deserialize(buf, sizeof(buf) - 1));
+  TEST_ASSERT_TRUE(t2 == DeviceSettings::defaults());
+
+  // A record from a different layout version is refused too.
+  uint8_t other[DeviceSettings::kSerializedSize];
+  DeviceSettings::defaults().serialize(other);
+  other[0] = other[0] + 1;
+  DeviceSettings t3;
+  TEST_ASSERT_FALSE(t3.deserialize(other, sizeof(other)));
 }
 
 void test_settings_bad_size_rejected() {
@@ -1551,6 +1641,87 @@ void test_max_size_pong_still_fits_the_frame() {
                            sink->at(0).m().body.pong.payload.bytes, 500);
 }
 
+void test_a_settings_write_that_changes_nothing_is_a_no_op() {
+  // Persistence is a closed inventory and NVS erases wear out, so a write
+  // that lands on the values already in force must not touch flash — and it
+  // must not wake every other client with a "settings changed" push. The
+  // response is still sent: the client asked for the read model.
+  RecordingSink other;
+  proc->add_sink(&other);
+  ClientToRadioMessage set = request(1);
+  set.which_body = kOpSetDeviceSettings;
+  set.body.set_device_settings.has_name = true;
+  set_str(set.body.set_device_settings.name,
+          sizeof(set.body.set_device_settings.name), "attic-pigeon");
+  set.body.set_device_settings.has_wifi_ssid = true;
+  set_str(set.body.set_device_settings.wifi_ssid,
+          sizeof(set.body.set_device_settings.wifi_ssid), "home-net");
+  send(set, sink);
+  TEST_ASSERT_EQUAL(1, hooks->name_calls_);
+  TEST_ASSERT_EQUAL(1, hooks->apply_wifi_calls_);
+  TEST_ASSERT_EQUAL(1, other.count());  // a real change is announced
+  other.clear();
+  sink->clear();
+
+  // Exactly the same write again: answered, but nothing persisted, renamed,
+  // re-applied or pushed.
+  set.id = 2;
+  send(set, sink);
+  TEST_ASSERT_EQUAL(1, sink->count());
+  TEST_ASSERT_EQUAL(meshpigeon_RadioToClient_device_settings_tag,
+                    sink->at(0).which());
+  TEST_ASSERT_EQUAL_STRING("attic-pigeon",
+                           sink->at(0).m().body.device_settings.name);
+  TEST_ASSERT_EQUAL_STRING("home-net",
+                           sink->at(0).m().body.device_settings.wifi_ssid);
+  TEST_ASSERT_EQUAL(1, hooks->name_calls_);
+  TEST_ASSERT_EQUAL(1, hooks->apply_wifi_calls_);
+  TEST_ASSERT_EQUAL(0, other.count());
+  proc->remove_sink(&other);
+
+  // A same-value PIN write is a no-op too, so it does not de-authorize the
+  // other connections: a rotation moves the flags, a no-op does not.
+  lock_with_pin("1234");
+  RecordingSink peer;
+  proc->add_sink(&peer);
+  ClientToRadioMessage auth = request(3);
+  auth.which_body = kOpAuth;
+  set_str(auth.body.auth.pin, sizeof(auth.body.auth.pin), "1234");
+  send(auth, sink);
+  send(auth, &peer);
+  ClientToRadioMessage rewrite = request(4);
+  rewrite.which_body = kOpSetDeviceSettings;
+  rewrite.body.set_device_settings.has_pin = true;
+  set_str(rewrite.body.set_device_settings.pin,
+          sizeof(rewrite.body.set_device_settings.pin), "1234");
+  send(rewrite, sink);
+  peer.clear();
+  ClientToRadioMessage get = request(5);
+  get.which_body = kOpGetDeviceSettings;
+  send(get, &peer);
+  TEST_ASSERT_EQUAL(meshpigeon_RadioToClient_device_settings_tag,
+                    peer.at(0).which());  // the peer kept its session
+  proc->remove_sink(&peer);
+}
+
+void test_fetch_packets_with_no_bound_means_everything() {
+  // 0 is "everything" here for the same reason it is for since_seq: 0 is not
+  // a meaningful bound, and a client that asked for "all of them" would
+  // otherwise get an empty FetchEnd and read it as an empty store.
+  for (int i = 0; i < 5; i++) {
+    const uint8_t pkt[] = {0x45};
+    proc->on_packet_received(-80, 10, pkt, 1);
+  }
+  sink->clear();
+  ClientToRadioMessage req = request(1);
+  req.which_body = kOpFetchPackets;
+  req.body.fetch_packets.since_seq = 0;
+  req.body.fetch_packets.max_count = 0;  // no bound
+  send(req, sink);
+  TEST_ASSERT_EQUAL(6, sink->count());  // 5 entries + FetchEnd
+  TEST_ASSERT_EQUAL(5, sink->at(5).m().body.fetch_end.count);
+}
+
 void test_set_device_name_rejects_control_bytes() {
   // The name is advertised verbatim over BLE, a length-constrained UTF-8
   // field, so control bytes must be refused. Bytes >= 0x80 are fine: a
@@ -1783,6 +1954,8 @@ void test_device_settings_push_reaches_only_authorized_clients() {
   send(stranger_auth, &stranger);
   stranger.clear();
   rename.id = 4;
+  set_str(rename.body.set_device_settings.name,
+          sizeof(rename.body.set_device_settings.name), "renamed-again");
   send(rename, sink);
   TEST_ASSERT_EQUAL(1, stranger.count());
   TEST_ASSERT_EQUAL_STRING("hunter2",
@@ -2246,6 +2419,7 @@ int main() {
   RUN_TEST(test_cobs_roundtrip);
   RUN_TEST(test_cobs_empty);
   RUN_TEST(test_cobs_decode_respects_the_destination_cap);
+  RUN_TEST(test_cobs_encoder_spans_runs_and_zeros);
   RUN_TEST(test_frame_reader_drops_a_body_longer_than_any_frame);
   RUN_TEST(test_frame_roundtrip_and_crc);
   RUN_TEST(test_frame_reader_stream);
@@ -2265,6 +2439,7 @@ int main() {
   RUN_TEST(test_settings_serialize_roundtrip);
   RUN_TEST(test_settings_corrupt_crc_rejected);
   RUN_TEST(test_settings_bad_size_rejected);
+  RUN_TEST(test_device_settings_record_roundtrips);
   RUN_TEST(test_device_settings_defaults_and_validation);
   RUN_TEST(test_ping_echoes);
   RUN_TEST(test_max_size_pong_still_fits_the_frame);
@@ -2311,6 +2486,8 @@ int main() {
   RUN_TEST(test_writing_a_pin_authorizes_the_writer);
   RUN_TEST(test_max_length_strings_survive_the_wire);
   RUN_TEST(test_device_settings_push_reaches_only_authorized_clients);
+  RUN_TEST(test_a_settings_write_that_changes_nothing_is_a_no_op);
+  RUN_TEST(test_fetch_packets_with_no_bound_means_everything);
   RUN_TEST(test_rx_push_reaches_only_authorized_clients);
   RUN_TEST(test_changing_the_pin_re_gates_other_connections);
   RUN_TEST(test_auth_gate);

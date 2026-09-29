@@ -110,7 +110,9 @@ what a client author reads.
    the documented character limit **+ 1** (nanopb counts the NUL inside the
    buffer, so `max_size: 20` carries only 19 characters — a cap that looks
    right and truncates every maximum-size value); a **bytes** cap is the
-   exact size.
+   exact size. A cap on a `repeated` field is a `max_count`, and the constant
+   the core hands a board hook is *derived* from the generated array
+   (`kMaxCapabilities`), so the two cannot drift apart.
 3. Regenerate: `NANOPB_DIR=/path/to/nanopb-0.4.9 ./scripts/regen-protos.sh`
    and commit the result. CI fails on stale output.
 4. Handle it in `CommandProcessor::handle_request`, with auth where the
@@ -230,6 +232,36 @@ These are not hypotheticals; each one cost a debugging session.
   (`MESHPIGEON_TX_POWER_MAX`, §2). `bandwidth_hz` is the same shape (checked
   before the ÷10 conversion, so 655370 Hz cannot wrap into 10 Hz). A new
   narrowing cast needs its range check in the same commit.
+- **A discarded return value is dead code, and the compiler will take you at
+  your word.** `DeviceSettings::deserialize()` and
+  `RadioSettings::deserialize()` both start with `*this = defaults();` so a
+  *rejected* record still leaves a valid object behind — a caller that
+  ignores the return value then has the shipped defaults rather than stack
+  garbage with an unterminated PIN in it. Written as a bare `defaults();`
+  statement instead, GCC deleted the call (nothing observes the returned
+  temporary) and the guarantee silently evaporated; only
+  `test_device_settings_record_roundtrips`, asserting that a *truncated*
+  record reads back as defaults, caught it. Assign through the result. This
+  is the same lesson as the brace-assignment trap below, one level up.
+- **`WiFiServer::available()` is the accept, not a probe.** On the pinned
+  Arduino core it *returns a `WiFiClient`*, and `accept()` is literally
+  `return available();`. So `if (!server.available()) return; WiFiClient c =
+  server.accept();` accepts the pending connection into a temporary
+  `WiFiClient` — whose destructor closes the socket — and the second call
+  then finds nothing: every TCP client is accepted and instantly hung up on
+  and the slot array never fills. It compiles clean, because the returned
+  client is contextually convertible to `bool`. One `accept()` is both the
+  probe and the accept: it returns an empty client when nothing is pending.
+- **COBS is defined over a byte *stream*, so the encoder is a state
+  machine.** `CobsEncoder` (put/finish) is the primitive; `cobs_encode()` is
+  it used once, and `frame_encode_envelope()` uses it again for the two CRC
+  bytes, so no frame is ever assembled in a scratch buffer. Do not
+  reintroduce the scratch frame: it was 516 bytes of stack in the deepest
+  call chain on a board whose loop task has 4 KB of it (`LOOP_STACK_SZ` in
+  the nRF52 BSP). For the same reason `IFrameSink` owns its own `wire_`
+  buffer behind `encode_wire()`: a `FRAME_MAX_WIRE` local in each of the four
+  `send_frame()` implementations was the largest single frame on that stack,
+  and RAM is the plentiful resource on every board that builds this.
 - **Both LoRa radio ports share one state machine** (`src/radio_lora.h`,
   `LoraRadioBase<Radio, Traits>`); the two `radio_*.h` files carry only
   `begin()` and a `Traits` struct of the three facts that differ (IRQ bit
@@ -321,6 +353,11 @@ These are not hypotheticals; each one cost a debugging session.
   it possible for a second central to inherit the session the first one had
   authenticated. Each central is now its own `IFrameSink`. Outbound frames
   still fan out to all of them, so a push is one serialization either way.
+  The flip side is that with **one** sink (the nRF52 boards) the sink *is*
+  the link, so `pump()` has to clear `authenticated` when it drops: an
+  ESP32-style per-connection sink gets that for free, a static one does not,
+  and without it whoever connects to a T114 after an authenticated session
+  starts inside the gate.
 - **The derived name needs the BLE stack, so BLE comes first.**
   `effective_name()` derives `MeshPigeon-XXXX` from the BLE address, and on
   both families that address does not exist until the stack is up

@@ -4,6 +4,7 @@
 #include <stddef.h>
 #include <stdint.h>
 
+#include "framing.h"
 #include "packet_store.h"
 #include "proto_alias.h"
 #include "protocol.h"
@@ -36,9 +37,13 @@ class ILoRaRadio {
                        int8_t* snr) = 0;
 };
 
-/** How many Capability values DeviceInfo can carry — the generated
- *  `capabilities` array size (device.options caps it at the same number). */
-static constexpr pb_size_t kMaxCapabilities = 16;
+/** How many Capability values DeviceInfo can carry. Derived from the
+ *  generated array, so it cannot drift from the `max_count` in
+ *  protobufs/meshpigeon/device.options: the two have to agree, because
+ *  fill_capabilities() is handed this number as its `max`. */
+static const pb_size_t kMaxCapabilities =
+    sizeof(((meshpigeon_DeviceInfo*)0)->capabilities) /
+    sizeof(meshpigeon_Capability);
 
 /** Board capability values (DeviceInfo.capabilities), assembled from board
  *  defines — compile-time facts, never probed at runtime. */
@@ -107,7 +112,27 @@ class IFrameSink {
   virtual ~IFrameSink() {}
   /** Send one serialized RadioToClient envelope (unchecked). */
   virtual void send_frame(const uint8_t* decoded, size_t len) = 0;
+
+  /** The wire form of one envelope — CRC first, then COBS, then the
+   *  delimiter — in this connection's own buffer, so send_frame() is just a
+   *  transport write. Returns the byte count, or 0 if the envelope cannot be
+   *  framed (unreachable: the static_assert in proto_alias.h bounds it).
+   *
+   *  The buffer is a member rather than a local in every send_frame(): a
+   *  FRAME_MAX_WIRE local is the largest single frame in the deepest call
+   *  chain, and the nRF52 loop task has 4 KB of stack. RAM is the plentiful
+   *  resource on every board that builds this.
+   */
+  size_t encode_wire(const uint8_t* envelope, size_t len) {
+    return frame_encode_envelope(wire_, envelope, len);
+  }
+  /** What encode_wire() just wrote. Only meaningful after a call to it. */
+  const uint8_t* wire() const { return wire_; }
+
   bool authenticated = false;
+
+ private:
+  uint8_t wire_[FRAME_MAX_WIRE];
 };
 
 /**
@@ -158,8 +183,6 @@ class CommandProcessor {
 
   const RadioSettings& settings() const { return settings_; }
   const DeviceSettings& device_settings() const { return device_; }
-  /** Last estimated noise floor in dBm; 0 when nothing has been received. */
-  int32_t noise_floor_dbm() const { return noise_floor_dbm_; }
   /** False once the radio has failed to come up or to accept a tuning. */
   bool radio_ok() const { return radio_ok_; }
   bool tx_in_flight() const { return tx_pending_; }
@@ -190,14 +213,23 @@ class CommandProcessor {
   void build_device_settings();
   void build_status();
   void build_packet_entry(uint32_t id, const StoredPacket& e);
-  void deliver(IFrameSink* to);
+  /** Encode response_ ONCE and hand it to the sinks `dispatch` selects:
+   *  the single recipient `to`, or every sink but `except`. */
+  void dispatch(IFrameSink* to, IFrameSink* except, bool authorized_only);
+  /** One recipient. A NULL recipient is a no-op, never a broadcast: the two
+   *  are different intents and only the caller knows which it meant. */
+  void deliver(IFrameSink* to) {
+    if (to != NULL) dispatch(to, NULL, false);
+  }
   /** Push response_ to every sink but `except`. `authorized_only` restricts
    *  it to connections that could call the gated operations — required for
    *  the three pushes that carry protected material: the DeviceSettings read
    *  model (the Wi-Fi passphrase), the live PacketEntry (the raw mesh bytes
    *  FetchPackets is gated behind) and the RadioSettings re-tune (which
    *  GetRadioSettings is gated behind). */
-  void broadcast_response(IFrameSink* except, bool authorized_only = false);
+  void broadcast_response(IFrameSink* except, bool authorized_only = false) {
+    dispatch(NULL, except, authorized_only);
+  }
 
   void send_error(uint32_t id, ErrorCode code, IFrameSink* to);
   void send_ok(uint32_t id, IFrameSink* to);

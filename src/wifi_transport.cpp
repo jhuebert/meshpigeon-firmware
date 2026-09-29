@@ -13,9 +13,8 @@ static const uint32_t kBackoffStartMs = 5000;
 static const uint32_t kBackoffMaxMs = 120000;
 
 void WifiTransport::Client::send_frame(const uint8_t* decoded, size_t len) {
-  uint8_t wire[FRAME_MAX_WIRE];
-  size_t n = frame_encode_envelope(wire, decoded, len);
-  if (n == 0 || client.write(wire, n) != n) {
+  const size_t n = encode_wire(decoded, len);
+  if (n == 0 || client.write(wire(), n) != n) {
     // The socket is gone or its buffer is full. Flag it: a dropped frame
     // mid-stream (say, half a FetchPackets burst) would otherwise leave the
     // client believing it received the whole thing, terminated by FetchEnd.
@@ -104,11 +103,15 @@ void WifiTransport::start_server() {
   stop_server();
   server_ = new WiFiServer(port_);
   server_->begin();
+  // Nagle delays a small segment behind an unacknowledged one, which is
+  // exactly the request-then-response shape this transport spends its life
+  // in. One frame is written per call, so there is nothing to coalesce.
+  server_->setNoDelay(true);
   server_up_ = true;
   // mDNS: meshpigeon-A3F2.local, so desktop tooling finds the pigeon
-  // without typing an IP (docs/radio-protocol.md §7).
-  if (!MDNS.begin(hostname_)) return;
-  MDNS.addService("meshpigeon", "tcp", port_);
+  // without typing an IP (docs/radio-protocol.md §7). Best-effort: a
+  // failure here costs name resolution, not the server.
+  if (MDNS.begin(hostname_)) MDNS.addService("meshpigeon", "tcp", port_);
 }
 
 void WifiTransport::stop_server() {
@@ -119,7 +122,8 @@ void WifiTransport::stop_server() {
   // change that tore the server down.
   for (size_t i = 0; i < kMaxClients; i++) drop_client(i);
   if (server_ != nullptr) {
-    server_->stop();
+    // ~WiFiServer() ends it; calling stop() first as well would close the
+    // listening descriptor twice.
     delete server_;
     server_ = nullptr;
   }
@@ -134,7 +138,15 @@ void WifiTransport::set_state(State s) {
 }
 
 void WifiTransport::accept_clients() {
-  if (!server_up_ || !server_->available()) return;
+  if (!server_up_ || server_ == nullptr) return;
+  // ONE call is both the probe and the accept. This core's WiFiServer makes
+  // WiFiServer::available() the accept (accept() is literally `return
+  // available();`), so probing with `available()` and then calling
+  // `accept()` accepts the connection into a temporary WiFiClient — whose
+  // destructor closes the socket — and the second call then finds nothing.
+  // Every client is accepted and instantly hung up on, and the array below
+  // never fills. `accept()` on its own returns an empty client when nothing
+  // is pending, which is the non-consuming probe.
   WiFiClient c = server_->accept();
   if (!c) return;
   for (size_t i = 0; i < kMaxClients; i++) {

@@ -27,9 +27,7 @@ class UsbCdcSink : public IFrameSink {
   }
 
   void send_frame(const uint8_t* decoded, size_t len) override {
-    uint8_t wire[FRAME_MAX_WIRE];
-    size_t n = frame_encode_envelope(wire, decoded, len);
-    Serial.write(wire, n);
+    Serial.write(wire(), len);
     Serial.flush();
   }
 
@@ -265,22 +263,24 @@ class BleSink : public NimBLEServerCallbacks,
     // exchange; NimBLE splits per connection otherwise. Every attached
     // central gets every frame.
     void send_frame(const uint8_t* decoded, size_t len) override {
-      uint8_t wire[FRAME_MAX_WIRE];
-      size_t n = frame_encode_envelope(wire, decoded, len);
+      const size_t n = encode_wire(decoded, len);
+      const uint8_t* bytes = wire();
       size_t off = 0;
       while (off < n) {
         size_t chunk = min(n - off, (size_t)20);
-        notify_->notify(&wire[off], chunk);
+        notify_->notify(&bytes[off], chunk);
         off += chunk;
       }
     }
 
     NimBLECharacteristic* notify_ = NULL;  // the shared NUS TX char
     uint16_t handle = 0;
-    // Who may write what, in a port with two tasks. The host task owns the
-    // identity fields and the two flags; the board loop owns `registered`
-    // (the sink registry), the reader, the frame buffer and the FIFO's
-    // tail. Nothing else crosses between them.
+    // Who may write what, in a port with two tasks. The host task owns
+    // `handle`, `notify_` and the two flags it sets (in_use,
+    // pending_disconnect) plus the FIFO's head; the board loop owns
+    // `registered` (the sink registry), the reader, the frame buffer and the
+    // FIFO's tail. Nothing else crosses between them, and each field has
+    // exactly one writer.
     volatile bool in_use = false;
     volatile bool registered = false;
     volatile bool pending_disconnect = false;
@@ -298,13 +298,14 @@ class BleSink : public NimBLEServerCallbacks,
 
   /** Take the first free slot for a freshly connected central. NULL when
    *  every slot is taken, which is the caller's cue to turn it away. The
-   *  sink registration happens in pump(), on the board loop. */
+   *  sink registration happens in pump(), on the board loop — so `registered`
+   *  belongs to the board loop alone and is not touched here: a slot that is
+   *  free has already had it cleared, before `in_use` went false. */
   Connection* claim(uint16_t handle) {
     for (size_t i = 0; i < kMaxCentrals; i++) {
       if (conns_[i].in_use) continue;
       conns_[i].handle = handle;
       conns_[i].in_use = true;
-      conns_[i].registered = false;
       conns_[i].pending_disconnect = false;
       conns_[i].authenticated = false;
       conns_[i].notify_ = tx_char_;
@@ -373,9 +374,15 @@ class BleSink : public IFrameSink {
   void pump() {
     drain_frames(*proc_, reader_, frame_, this, bleuart);
     if (drop_pending_) {
+      // The link went away. Everything queued was for the central that just
+      // left, and so was the session it authenticated: a session must not
+      // outlive the link it was authenticated on, or whoever connects next
+      // starts inside the gate. The ESP32 twin gets this for free by giving
+      // every central its own sink; with one static sink it is ours to do.
       drop_pending_ = false;
       head_ = 0;
       count_ = 0;
+      authenticated = false;
     }
     drain_step();
   }
@@ -387,12 +394,11 @@ class BleSink : public IFrameSink {
     // queue with no central attached would sit there until one connects and
     // then be delivered as a stale push into that central's session.
     if (!connected()) return;
-    uint8_t wire[FRAME_MAX_WIRE];
-    size_t n = frame_encode_envelope(wire, decoded, len);
+    size_t n = encode_wire(decoded, len);
     make_room();
     if (count_ == kQueueDepth) return;  // central not reading: drop this frame
     Queued& q = queue_[(head_ + count_) % kQueueDepth];
-    memcpy(q.buf, wire, n);
+    memcpy(q.buf, wire(), n);  // queued: the board loop drains it later
     q.len = n;
     q.off = 0;
     count_++;

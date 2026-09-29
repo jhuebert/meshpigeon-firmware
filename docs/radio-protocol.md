@@ -292,6 +292,14 @@ it set.
   backstop so a stale client cannot leave a dead setting behind.
 - **Persists immediately** and applies live: a name change re-advertises, a
   PIN change re-gates immediately, and Wi-Fi settings connect/disconnect.
+- **A write that changes nothing is a no-op.** The candidate read model is
+  compared against what is already in force first, and a write that lands on
+  the same values persists nothing, re-advertises nothing, re-applies nothing
+  and pushes nothing — only the issuer's response is sent, because that is
+  what it asked for. The persistence inventory is closed and NVS erases wear
+  out, so "the client re-sent its settings" must not cost a flash write; and a
+  same-value PIN write is not a rotation, so it does not de-authorize the
+  other connections (§8.2).
 - **No first-owner lock** (§6.1).
 - Accepted writes broadcast the full post-write `DeviceSettings` to all
   *other* clients, then answer the issuer with the same read model. That
@@ -323,7 +331,9 @@ have a shared pairing concept.
   otherwise setting a PIN from the shipped default would lock the writer out
   of the device it just configured), and every other connection loses the
   session it held. A session that knew the old PIN does not survive a
-  rotation.
+  rotation. The flags follow the *link*, not the transport: a BLE central
+  that disconnects takes its session with it on both board families, so
+  whoever connects next starts outside the gate.
 - **Rate limit, per device.** The first 3 failed attempts are free. From the
   4th on, a 1-second penalty window opens, and during it every attempt —
   even with the correct PIN, on any connection — is rejected unevaluated.
@@ -390,11 +400,15 @@ packet larger than the whole pool is dropped and counted in `dropped`.
   the whole pool is dropped and counted, and gets no live push: the app would
   otherwise see a seq it could never fetch again.
 - `FetchPackets` streams every retained entry with `seq > since_seq`, oldest
-  first, up to `max_count`, then `FetchEnd` with the delivered count. The
-  firmware clamps `max_count` to **64 entries per request** (a stream is
-  written straight out of the sink inside one handler call, and a board has
-  to stay responsive), so `FetchEnd` can come back shorter than asked for:
-  re-issue with `since_seq` = the last seq received. The cursor is
+  first, up to `max_count`, then `FetchEnd` with the delivered count. Both
+  zeros mean "everything" — `since_seq = 0` is the start of the boot and
+  `max_count = 0` is no bound — because 0 is not a meaningful value for
+  either, and a client that asked for "all of them" must not be handed an
+  empty `FetchEnd` and read it as an empty store. The firmware clamps a
+  non-zero `max_count` to **64 entries per request** (a stream is written
+  straight out of the sink inside one handler call, and a board has to stay
+  responsive), so `FetchEnd` can come back shorter than asked for: re-issue
+  with `since_seq` = the last seq received. The cursor is
   **exclusive** and seq 0 is never assigned, so `since_seq = 0` means "from
   the beginning" and stays correct for the life of the boot.
   `StoreInfo.oldest_seq` is the *gap boundary* instead: everything below it
@@ -428,7 +442,7 @@ The persistence inventory is **closed** — three things, ever:
 |---|---|---|
 | radio settings | NVS `meshpigeon/radio` | `/radio.bin` |
 | boot count | NVS `meshpigeon/boots` | `/boots.bin` |
-| device settings (name, PIN, Wi-Fi) | NVS keys `name`, `pin`, `wifie`, `wifissid`, `wifipass`, `wifiport`, plus the commit marker `dev` (written **last**; its absence means "never written") | `/dev.bin` (one fixed-layout record: version byte + CRC16) |
+| device settings (name, PIN, Wi-Fi) | NVS keys `name`, `pin`, `wifie`, `wifissid`, `wifipass`, `wifiport`, plus the commit marker `dev` (written **last**; its absence means "never written") | `/dev.bin` (one fixed-layout record, serialized by `DeviceSettings::serialize` in the core: version byte + trailing CRC16) |
 
 The commit markers are what make a write power-loss tolerant, as the
 `SettingsStore` contract requires: NVS commits each key separately, so a cut

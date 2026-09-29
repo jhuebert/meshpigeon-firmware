@@ -56,6 +56,19 @@ struct RadioSettings {
  * Bluetooth device's default), and a user may replace it with 4..8 ASCII
  * digits. There is no "no PIN" state. The value is write-only on the wire —
  * DeviceSettingsMessage responses never carry it.
+ *
+ * Serialized layout (little-endian, kSerializedSize bytes: the fields
+ * followed by a 2-byte CRC-16/CCITT-FALSE over them — see serialize()):
+ *   [version:1][name:MESHPIGEON_NAME_MAX+1][pin:MESHPIGEON_PIN_MAX+1]
+ *   [wifi_enabled:1][wifi_ssid:MESHPIGEON_SSID_MAX+1]
+ *   [wifi_password:MESHPIGEON_PASS_MAX+1][wifi_port:u16][crc16:2]
+ *
+ * It lives here, beside the struct, for the same reason RadioSettings does:
+ * the format is code, not a board's private business. Every field is a
+ * fixed-size char array or a scalar, so the layout is exact on any host —
+ * and being in the core, it is covered by the host tests. A board's flash
+ * file is then a serialize()/deserialize() away, with no hand-rolled blob
+ * struct to drift from these fields.
  */
 struct DeviceSettings {
   char name[MESHPIGEON_NAME_MAX + 1];  // empty = derived default name
@@ -66,6 +79,14 @@ struct DeviceSettings {
   uint16_t wifi_port;
 
   static const char* kDefaultPin() { return "0000"; }
+
+  static const uint8_t kSerializedVersion = 1;
+  static const size_t kSerializedSize =
+      1 + (MESHPIGEON_NAME_MAX + 1) + (MESHPIGEON_PIN_MAX + 1) + 1 +
+      (MESHPIGEON_SSID_MAX + 1) + (MESHPIGEON_PASS_MAX + 1) + 2 + 2;
+
+  void serialize(uint8_t* out) const;          // out: kSerializedSize bytes
+  bool deserialize(const uint8_t* in, size_t len);
 
   static DeviceSettings defaults() {
     DeviceSettings d;

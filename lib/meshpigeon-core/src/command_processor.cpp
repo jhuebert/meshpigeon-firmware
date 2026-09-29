@@ -119,20 +119,17 @@ size_t CommandProcessor::encode_response(uint8_t* buf) {
   return encode_envelope(buf, MESHPIGEON_MAX_FRAME_PAYLOAD, response_);
 }
 
-void CommandProcessor::deliver(IFrameSink* to) {
-  if (to == NULL) return;
-  uint8_t buf[MESHPIGEON_MAX_FRAME_PAYLOAD];
-  size_t len = encode_response(buf);
-  if (len != 0) to->send_frame(buf, len);
-}
-
-void CommandProcessor::broadcast_response(IFrameSink* except,
-                                          bool authorized_only) {
+void CommandProcessor::dispatch(IFrameSink* to, IFrameSink* except,
+                                bool authorized_only) {
   // Encoded once and reused for every recipient: a FetchPackets burst or a
   // Status push is one serialization, not one per sink.
   uint8_t buf[MESHPIGEON_MAX_FRAME_PAYLOAD];
   size_t len = encode_response(buf);
   if (len == 0) return;
+  if (to != NULL) {
+    to->send_frame(buf, len);
+    return;
+  }
   for (size_t i = 0; i < num_sinks_; i++) {
     if (sinks_[i] == NULL || sinks_[i] == except) continue;
     // `authorized_only` is for the three pushes that carry protected
@@ -478,7 +475,13 @@ void CommandProcessor::handle_request(const ClientToRadioMessage& req,
       if (!require_auth(req.id, from)) return;
       const uint32_t id = req.id;
       uint32_t max_count = req.body.fetch_packets.max_count;
-      if (max_count > kMaxFetchPerRequest) max_count = kMaxFetchPerRequest;
+      // max_count = 0 means "everything", the same convention since_seq = 0
+      // uses: 0 is never a meaningful bound, and a client that meant "all of
+      // them" would otherwise get an empty FetchEnd and read it as an empty
+      // store. It is clamped like any other value.
+      if (max_count == 0 || max_count > kMaxFetchPerRequest) {
+        max_count = kMaxFetchPerRequest;
+      }
       uint32_t delivered = 0;
       store_.fetch_since(req.body.fetch_packets.since_seq, max_count,
                          [&](const StoredPacket& e) {
@@ -547,13 +550,43 @@ void CommandProcessor::handle_request(const ClientToRadioMessage& req,
                    from);
         return;
       }
-      // ---- apply: validated, so these all succeed ----
+      // ---- apply: validated, so every one of these succeeds. Build the
+      // whole candidate first and decide once whether it is a change, so
+      // the side effects below can only ever run for a real change. ----
       if (m.has_name) {
         strncpy(next.name, m.name, MESHPIGEON_NAME_MAX);
         next.name[MESHPIGEON_NAME_MAX] = 0;
       }
+      if (m.has_pin) DeviceSettings::set_pin(next.pin, m.pin);
+      if (m.has_wifi_enabled) next.wifi_enabled = m.wifi_enabled;
+      if (m.has_wifi_ssid) {
+        strncpy(next.wifi_ssid, m.wifi_ssid, MESHPIGEON_SSID_MAX);
+        next.wifi_ssid[MESHPIGEON_SSID_MAX] = 0;
+      }
+      if (m.has_wifi_password) {
+        strncpy(next.wifi_password, m.wifi_password, MESHPIGEON_PASS_MAX);
+        next.wifi_password[MESHPIGEON_PASS_MAX] = 0;
+      }
+      if (m.has_wifi_port) next.wifi_port = (uint16_t)m.wifi_port;
+
+      // A write that lands on the values already in force is a no-op, and a
+      // no-op is not a change: no flash write (the persistence inventory is
+      // closed and NVS erases wear out), nothing re-advertised or re-applied,
+      // and no "another client changed settings" push to wake every other
+      // client with. The response is still sent — the client asked for the
+      // read model. Rewriting the PIN with the value it already holds is
+      // therefore a no-op too, so it does not de-authorize the other
+      // connections: a rotation moves the flags, a no-op does not
+      // (docs/radio-protocol.md §8.1).
+      if (next == device_) {
+        begin_response(req.id);
+        build_device_settings();
+        deliver(from);
+        return;
+      }
+      device_ = next;
+
       if (m.has_pin) {
-        DeviceSettings::set_pin(next.pin, m.pin);
         // The lock changed, so the lock rule now applies in both directions:
         // every other connection loses the session it held (a peer that knew
         // the old PIN must not survive a rotation), and the writer gains
@@ -570,17 +603,6 @@ void CommandProcessor::handle_request(const ClientToRadioMessage& req,
         auth_fails_ = 0;         // the lock changed: fresh brute-force budget
         auth_backoff_until_ = 0;  // and no pending penalty
       }
-      if (m.has_wifi_enabled) next.wifi_enabled = m.wifi_enabled;
-      if (m.has_wifi_ssid) {
-        strncpy(next.wifi_ssid, m.wifi_ssid, MESHPIGEON_SSID_MAX);
-        next.wifi_ssid[MESHPIGEON_SSID_MAX] = 0;
-      }
-      if (m.has_wifi_password) {
-        strncpy(next.wifi_password, m.wifi_password, MESHPIGEON_PASS_MAX);
-        next.wifi_password[MESHPIGEON_PASS_MAX] = 0;
-      }
-      if (m.has_wifi_port) next.wifi_port = (uint16_t)m.wifi_port;
-      device_ = next;
       settings_store_.save_device(device_);  // persists immediately (docs §8.1)
       if (m.has_name && hooks_) {            // rename + re-advertise (§8.3)
         char effective[MESHPIGEON_NAME_MAX + 1];

@@ -92,8 +92,11 @@ typedef struct _meshpigeon_FetchPackets {
  do NOT start from StoreInfo.oldest_seq, which is the gap boundary and
  would skip the oldest entry still held. */
     uint32_t since_seq;
-    /* Upper bound on entries delivered in this stream. The firmware clamps
- this to a per-request cap (it streams straight out of the sink, and a
+    /* Upper bound on entries delivered in this stream. 0 means "no bound",
+ the same convention since_seq = 0 uses: 0 is not a meaningful bound, and
+ a client asking for "all of them" would otherwise get an empty FetchEnd
+ and read it as an empty store. Any non-zero value is clamped to the
+ per-request cap (the firmware streams straight out of the sink, and a
  board must stay responsive), so FetchEnd.count may come back smaller
  than asked for: re-issue with since_seq = the last seq you received. */
     uint32_t max_count;

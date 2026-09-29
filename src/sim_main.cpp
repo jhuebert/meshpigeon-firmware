@@ -60,6 +60,29 @@ class SimHooks : public IBoardHooks {
     out[4] = 0;
   }
   void set_device_name(const char* name) override { (void)name; }  // the sim has nothing to rename
+  bool wifi_supported() const override {
+    // True unconditionally: the sim's only client link is TCP, which is the
+    // Wi-Fi path, so it takes Wi-Fi settings and stores them like a board
+    // that has the radio does. `--fake-wifi` scripts the Status machine
+    // below — that is a switch on what the link is *reporting*, not on
+    // whether the board can accept the setting.
+    return true;
+  }
+  pb_size_t fill_capabilities(meshpigeon_Capability* out,
+                              pb_size_t max) override {
+    // The sim is a full board for the app's purposes, so it has to
+    // advertise the transport it actually offers. An empty capability list
+    // would make an app hide every field it gates on, and the sim is the
+    // development loop for anything protocol-shaped.
+    const meshpigeon_Capability caps[] = {
+        meshpigeon_Capability_CAPABILITY_WIFI_STA};
+    pb_size_t n = 0;
+    for (size_t i = 0; i < sizeof(caps) / sizeof(caps[0]); i++) {
+      if (n < max) out[n] = caps[i];
+      n++;
+    }
+    return n;
+  }
   void fill_status(StatusMessage* status) override {
     // Scripted transitions: OFF -> CONNECTING (immediately) -> CONNECTED
     // after ~2 s, driven off the sim clock.
@@ -87,7 +110,6 @@ class SimHooks : public IBoardHooks {
       status->wifi_rssi = -55;
     }
   }
-  bool wifi_supported() const override { return g_fake_wifi; }
 
   uint8_t wifi_tcp_clients() override { return (uint8_t)g_tcp_clients; }
 };
@@ -99,9 +121,8 @@ class Client : public IFrameSink {
   explicit Client(int fd) : fd_(fd) {}
 
   void send_frame(const uint8_t* decoded, size_t len) override {
-    uint8_t wire[FRAME_MAX_WIRE];
-    size_t n = frame_encode_envelope(wire, decoded, len);
-    ssize_t r = send(fd_, wire, n, MSG_NOSIGNAL);
+    size_t n = encode_wire(decoded, len);
+    ssize_t r = send(fd_, wire(), n, MSG_NOSIGNAL);
     (void)r;
   }
 
