@@ -248,7 +248,11 @@ These are not hypotheticals; each one cost a debugging session.
   body it is about to fill, and every response starts with `begin_response(id)`
   — so a builder never depends on all sixteen call sites having reset the
   envelope first, and a board hook that fills only the Status fields it knows
-  leaves the rest reading as "unknown".
+  leaves the rest reading as "unknown". Zero a generated body through a local
+  (`const StatusMessage empty = StatusMessage_init_zero; body = empty;`), not
+  `body.status = StatusMessage_init_zero;`: brace-assignment compiles on the
+  host and on arm-none-eabi but is rejected by the xtensa toolchain, so
+  `pio test -e native` will not catch it. `pio run` covers all four.
 - **`regen-protos.sh` needs an absolute, pre-created output directory.** The
   PyInstaller-packed generator mishandles relative `../` paths. The script
   resolves `OUT` with `$(pwd)` and `mkdir -p`s it; do not "simplify" that back.

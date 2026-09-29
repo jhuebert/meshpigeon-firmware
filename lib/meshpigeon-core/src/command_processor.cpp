@@ -149,7 +149,10 @@ void CommandProcessor::build_radio_settings() {
   response_.which_body = meshpigeon_RadioToClient_radio_settings_tag;
   // response_.body is a union: start from a zeroed message so a field this
   // builder does not set cannot inherit the previous response's value.
-  response_.body.radio_settings = RadioSettingsMessage_init_zero;
+  // (A local, not `body.x = {...}`: the xtensa toolchain rejects assigning a
+  // brace initializer even though gcc and arm-none-eabi accept it.)
+  const RadioSettingsMessage empty = RadioSettingsMessage_init_zero;
+  response_.body.radio_settings = empty;
   RadioSettingsMessage& m = response_.body.radio_settings;
   m.freq_hz = settings_.freq_hz;
   // bw_x100khz is in 0.01 kHz units, i.e. 10 Hz steps.
@@ -162,7 +165,8 @@ void CommandProcessor::build_radio_settings() {
 
 void CommandProcessor::build_device_settings() {
   response_.which_body = meshpigeon_RadioToClient_device_settings_tag;
-  response_.body.device_settings = DeviceSettingsMessage_init_zero;
+  const DeviceSettingsMessage empty = DeviceSettingsMessage_init_zero;
+  response_.body.device_settings = empty;
   DeviceSettingsMessage& m = response_.body.device_settings;
   build_name(device_, m.name);
   m.wifi_enabled = device_.wifi_enabled;
@@ -181,7 +185,8 @@ void CommandProcessor::build_status() {
   // Zeroed first, so a hook that only fills the fields it knows about (a
   // board with no Wi-Fi, say) leaves the rest reading as "unknown" instead
   // of as the previous Status's values.
-  response_.body.status = StatusMessage_init_zero;
+  const StatusMessage empty = StatusMessage_init_zero;
+  response_.body.status = empty;
   StatusMessage& m = response_.body.status;
   // The hook owns the link state; the client counts are the core's, because
   // the sinks it broadcasts to are the core's registry.
