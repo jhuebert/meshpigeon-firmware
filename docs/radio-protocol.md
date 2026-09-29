@@ -35,7 +35,7 @@ on the client's version — it only reports its own.
 
 | Transport | Bearer | Notes |
 |---|---|---|
-| USB CDC | virtual COM / serial | 115200 8N1 (line coding ignored); the primary bench/debug path |
+| USB CDC | virtual COM / serial | 115200 8N1 (line coding ignored); the primary bench/debug path. Carries **frames only** — a client must not expect a console on it, and a lost response is possible (see §2, "a lost ack") |
 | BLE | Nordic UART Service (`6E400001-B5A3-F393-E0A9-E50E24DCCA9E`) | write-to-device char `6E400002-…`, notify-from-device char `6E400003-…`; multiple centrals on ESP32, single central on nRF52 |
 | Wi-Fi TCP | raw TCP server, default port **5000** | multi-client (≤ 4), ESP32 boards only (§7); mDNS `_meshpigeon._tcp` |
 
@@ -49,6 +49,22 @@ which on the one transport that admits strangers without a password is the
 whole attack. A push is one serialization however many are listening, and
 each central is then sent its own copy.
 
+**A lost ack is possible, and it is not always a retry.** Two operations on
+the path can consume a response that was already produced: a frame dropped for
+bad CRC or a bad COBS body, and a stray byte stream on the port that is not a
+frame at all. §2 describes the second. The practical rule for a client is:
+
+- **Idempotent operations** (`Get*`, `Ping`, `FetchPackets`, `PurgeStore`,
+  `SendPacket`, `SetDeviceSettings`, `SetRadioSettings`) may simply be retried.
+  `SendPacket` is idempotent in the sense that matters here — a lost ack leaves
+  the *first* transmission on the air and the app's outbox still holds that
+  `seq`, so a retry keyed the packet up a second time, which is the app's call
+  to make, not a protocol error.
+- **`Reboot`, `Bootloader` and `FactoryReset` must not be blind-retried.** A
+  lost ack there means the node has already restarted, and re-sending restarts
+  it again. Poll `DeviceInfo.boot_count` (or simply reconnect and re-read the
+  state) to find out what happened.
+
 ## 2. Framing
 
 ```
@@ -57,6 +73,12 @@ wire frame   :=  COBS( envelope ‖ crc16 )  0x00
 
 - **COBS**: consistent overhead byte stuffing; the 0x00 byte terminates each
   frame. Frames may be split across USB packets / BLE writes / TCP segments.
+- **Nothing else may appear on these ports.** A client that finds a body which
+  does not decode is looking at something that is not a frame, and it must not
+  assume the bytes up to the next delimiter belonged to a frame it can trust.
+  This is not hypothetical: the ESP-IDF Wi-Fi driver writes its own log text to
+  the USB CDC port, and one such line silently consumes the frame that follows
+  it.
 - **CRC-16/CCITT-FALSE** (poly 0x1021, init 0xFFFF) over the serialized
   envelope, appended little-endian *before* the COBS pass.
 - A frame with a bad CRC or a malformed COBS body is dropped silently; the

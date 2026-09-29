@@ -214,6 +214,38 @@ build of the four targets), `bench` (self-hosted runner, `bench-ready` label).
 
 These are not hypotheticals; each one cost a debugging session.
 
+- **Never turn Wi-Fi modem sleep off while BLE is up.** `WiFi.setSleep(false)`
+  is `esp_wifi_set_ps(WIFI_PS_NONE)`, and ESP-IDF's coexistence layer *aborts
+  the chip* when that is called with the BT controller already running — which
+  it always is here, because `setup()` starts the BLE sink before the Wi-Fi
+  transport (the derived name needs the BLE address). It is not a link failure
+  and not a retryable one: the settings were already persisted, so the abort
+  happens again on **every boot**, and because `apply_wifi()` runs before
+  `send_device_settings()` the client never even gets an error — its request
+  times out having been applied. The only ways out are erasing the settings
+  record or reflashing, and every operation that could write that record is
+  itself auth-gated. `WIFI_PS_MIN_MODEM` (the core default) is what the
+  coexistence path requires.
+- **The USB CDC RX queue is 256 bytes unless you say otherwise.** `Serial` on
+  ESP32 is the core's `HWCDC`, whose queue defaults to 256 and whose ISR
+  **silently** drops the rest of a 64-byte chunk that does not fit — no log
+  anywhere, and a truncated frame is then dropped exactly as a CRC failure is,
+  so the client cannot tell. At the default, a host that burst-writes a frame
+  over ~256 wire bytes loses bytes, and a legal 255-byte `SendPacket` (268-byte
+  frame) landed about 10% of the time. `main.cpp` calls
+  `Serial.setRxBufferSize(FRAME_MAX_WIRE + 64)` before `begin()`;
+  `HWCDC::begin()` only applies its default when no queue exists yet, so the
+  call has to come first.
+- **This port is not a console, and the ESP-IDF logs are not silenced by
+  `setDebugOutput`.** That call gates the *Arduino* log handler only; the Wi-Fi
+  driver's own `ESP_LOGE` still lands on the same byte stream. A log line
+  contains no `0x00`, so a client buffers it as a frame body until the next
+  frame's delimiter — consuming that frame. The observable effect is **one
+  response silently lost per log line, with the request's side effect still
+  applied** (observed ~1 Wi-Fi teardown in 25). A log line containing a `0x00`
+  would desynchronise the stream outright. The bench suite retries
+  un-answered requests and checks `boot_count` rather than re-sending a restart
+  op; anything else must assume a lost ack is possible.
 - **The CRC is not optional.** `CommandProcessor` hands sinks a bare envelope.
   Transports must call `frame_encode_envelope()` (which appends the CRC before
   COBS) — using `frame_encode_wire()` directly sends un-CRC'd frames and every
