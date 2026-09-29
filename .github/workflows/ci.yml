@@ -20,6 +20,13 @@ jobs:
         with:
           python-version: '3.12'
       - run: pip install platformio
+      - name: vendor nanopb 0.4.9
+        run: |
+          curl -sL https://jpa.kapsi.fi/nanopb/download/nanopb-0.4.9-linux-x86.tar.gz \
+            | tar xz -C "$HOME"
+          mv "$HOME/nanopb-0.4.9-linux-x86" "$HOME/nanopb"
+      - name: the committed protobuf sources are current
+        run: NANOPB_DIR=$HOME/nanopb ./scripts/regen-protos.sh --check
       - name: Run host tests
         run: pio test -e native
       - name: Build desktop simulator

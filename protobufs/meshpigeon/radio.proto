@@ -1,0 +1,148 @@
+// MeshPigeon radio interface — radio tuning and the packet store.
+//
+// Part of the authoritative wire specification for the MeshPigeon radio
+// firmware (see envelope.proto for framing and the evolution policy).
+//
+// Semantics are normative in docs/plans/13-device-settings-and-interface-v2.md
+// and docs/radio-protocol.md: the first-owner lock (§7.1 of the protocol doc),
+// the raw-bytes-only store, and the RAM-only guarantee (plan 13 §16 — no
+// packet bytes are ever written to flash).
+
+syntax = "proto3";
+
+package meshpigeon;
+
+option csharp_namespace = "MeshPigeon.Protos";
+option go_package = "github.com/jhuebert/meshpigeon-firmware/protobufs/meshpigeon";
+option java_multiple_files = true;
+option java_package = "dev.meshpigeon.proto";
+option swift_prefix = "";
+
+// ---------------------------------------------------------------------------
+// Radio tuning
+// ---------------------------------------------------------------------------
+
+// Reads the persisted radio settings.
+message GetRadioSettings {}
+
+// The LoRa radio tuning: frequency, bandwidth, spreading factor, coding rate
+// and TX power. A response to GetRadioSettings or SetRadioSettings
+// (post-bump), and the payload of the async RadioSettingsChanged push (same
+// message, id = 0).
+message RadioSettings {
+  // Center frequency in Hz.
+  uint32 freq_hz = 1;
+
+  // Channel bandwidth in Hz (e.g. 125000 = 125.00 kHz).
+  uint32 bandwidth_hz = 2;
+
+  // Spreading factor, 5..12.
+  uint32 sf = 3;
+
+  // Coding rate denominator: 5..8 means 4/5 .. 4/8.
+  uint32 cr = 4;
+
+  // TX power in dBm.
+  uint32 power_dbm = 5;
+
+  // Bumped by the firmware (+1) on every accepted change; ignored in
+  // SetRadioSettings requests. Lets clients detect concurrent retunes.
+  uint32 config_epoch = 6;
+}
+
+// Applies new radio settings atomically: validated, persisted immediately,
+// applied at once, and every OTHER connected client receives an async
+// RadioSettingsChanged. During the first 5 minutes after boot only the FIRST
+// accepted change is honored; later ones return ERROR_CODE_BUSY
+// (the first-owner lock, docs/radio-protocol.md §7.1).
+message SetRadioSettings {
+  RadioSettings settings = 1;
+}
+
+// ---------------------------------------------------------------------------
+// Packet store
+// ---------------------------------------------------------------------------
+
+// Sends raw on-air bytes once (≤ 255 bytes — the Semtech SX12xx silicon cap,
+// which covers everything MeshCore and Meshtastic can put on the air).
+// No retry/ACK logic lives here — the app owns that and listens for on-air
+// ACKs through the same store. One TX at a time: a second concurrent send
+// returns ERROR_CODE_BUSY. The async TxResult for the returned seq follows
+// when the radio finishes.
+message SendPacket {
+  bytes raw = 1;
+}
+
+// Acknowledges a SendPacket: the packet was stored and keyed up; seq is the
+// store id the eventual TxResult refers to.
+message PacketAccepted {
+  uint32 seq = 1;
+}
+
+// Streams retained packets: all entries with seq > since_seq, oldest first,
+// up to max_count, one PacketEntry per COBS frame (each echoing the request's
+// id), terminated by a FetchEnd carrying the delivered count.
+message FetchPackets {
+  // Resume cursor: only entries with seq > since_seq are sent. Use
+  // StoreInfo.oldest_seq to start from the beginning.
+  uint32 since_seq = 1;
+
+  // Upper bound on entries delivered in this stream.
+  uint32 max_count = 2;
+}
+
+// One retained packet: raw on-air bytes plus reception metadata. The firmware
+// cannot read the payload — raw is all it keeps (that is what maximizes
+// capacity, plan 04 §1.1).
+message PacketEntry {
+  // Monotonic store id; never reused across wraps or purges.
+  uint32 seq = 1;
+
+  // Raw over-the-air bytes, ≤ 255.
+  bytes raw = 2;
+
+  // Radio uptime at rx/tx time — the same monotonic 64-bit clock as
+  // DeviceInfo.uptime_ms. Anchor once per connection and every packet
+  // places with plain arithmetic.
+  uint64 uptime_ms = 3;
+
+  // RF stats at rx time (0 for TX entries).
+  int32 rssi = 4;
+
+  // RF stats at rx time (0 for TX entries).
+  int32 snr = 5;
+
+  // Where this entry came from. Entries are exactly one of these; new
+  // origins may be added later, so treat unknown values as "display with
+  // the default treatment" rather than an error.
+  enum Origin {
+    ORIGIN_UNSPECIFIED = 0;
+    // Keyed up by us via SendPacket.
+    ORIGIN_SENT = 1;
+    // Received off the air.
+    ORIGIN_RECEIVED = 2;
+  }
+
+  Origin origin = 6;
+}
+
+// Terminates a FetchPackets stream: the number of PacketEntry frames
+// delivered (which may be fewer than max_count).
+message FetchEnd {
+  uint32 count = 1;
+}
+
+// Outcome of a SendPacket, pushed asynchronously (id = 0) when the radio
+// finishes keying up. Not delivered for packets the radio refused
+// immediately — those got an Error response instead.
+message TxResult {
+  // The store id returned in PacketAccepted.
+  uint32 seq = 1;
+
+  // True = transmitted; false = the radio failed to complete it.
+  bool success = 2;
+}
+
+// Wipes the packet store (the RAM ring). Settings are untouched; FactoryReset
+// is the one that clears both. Sequence numbers restart.
+message PurgeStore {}

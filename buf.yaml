@@ -1,0 +1,18 @@
+version: v2
+
+# MeshPigeon proto schema. `buf lint` runs in CI so schema quality is
+# enforced on every change; `buf breaking` against the merge base enforces
+# the evolution policy in envelope.proto (additive-only) mechanically.
+#
+# PACKAGE_VERSION_SUFFIX is disabled deliberately: the package stays
+# `meshpigeon` (no `.v1` suffix) so nanopb's generated C identifiers stay
+# short on the device. Whole-spec versioning is DeviceInfo.spec_version.
+
+modules:
+  - path: protobufs
+
+lint:
+  use:
+    - STANDARD
+  except:
+    - PACKAGE_VERSION_SUFFIX

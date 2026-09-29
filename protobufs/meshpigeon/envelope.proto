@@ -1,0 +1,173 @@
+// MeshPigeon radio interface — envelopes, i.e. the operation specification.
+//
+// This is the authoritative wire contract for the MeshPigeon radio firmware.
+// The .proto files in this directory are the spec; docs/radio-protocol.md is
+// its prose companion (framing details, semantics, history).
+//
+// ## Framing
+//
+//   wire frame :=  COBS(serialized_message)  0x00
+//
+// One serialized envelope per frame on every transport (USB CDC, BLE NUS,
+// Wi-Fi TCP). CRC-16/CCITT-FALSE over the serialized bytes, appended
+// little-endian, as docs/radio-protocol.md describes. Requests carry a
+// client-chosen id; the response echoes it. Unsolicited (async) messages use
+// id = 0. Multi-message streams (FetchPackets) send several frames, each
+// echoing the request's id, with a terminator message.
+//
+// ## Evolution policy (normative)
+//
+//   * Only ever ADD fields, oneof variants, or enum values.
+//   * Never renumber or reuse a field number; `reserved` removed ones.
+//   * Unknown fields and unknown oneof variants are skipped by every protobuf
+//     decoder, so additive changes are backwards compatible by construction.
+//     Radios that predate a variant reply ERROR_CODE_BAD_COMMAND.
+//   * Whole-spec breaks increment DeviceInfo.spec_version; clients must
+//     refuse radios whose spec_version they do not implement.
+//
+// ## Operations
+//
+// The `body` oneofs below ARE the enumeration of supported operations —
+// each member is a method of this interface. Every request gets its own
+// message (even empty ones) so requests can gain fields later without
+// breaking older firmware, which skips what it does not know.
+
+syntax = "proto3";
+
+package meshpigeon;
+
+import "meshpigeon/device.proto";
+import "meshpigeon/radio.proto";
+
+option csharp_namespace = "MeshPigeon.Protos";
+option go_package = "github.com/jhuebert/meshpigeon-firmware/protobufs/meshpigeon";
+option java_multiple_files = true;
+option java_package = "dev.meshpigeon.proto";
+option swift_prefix = "";
+
+// A request from a companion client to the radio. Exactly one `body` is set;
+// the radio replies with the matching RadioToClient carrying the same id
+// (errors reply Error with the request's id).
+message ClientToRadio {
+  // Correlation id chosen by the client; must be non-zero for requests.
+  uint32 id = 1;
+
+  oneof body {
+    // Echo test; the radio replies Pong with the same payload bytes.
+    Ping ping = 2;
+
+    // Identity, version, capabilities, store stats, health.
+    GetDeviceInfo get_device_info = 3;
+
+    // Radio tuning.
+    GetRadioSettings get_radio_settings = 4;
+    SetRadioSettings set_radio_settings = 5;
+
+    // Packet store.
+    SendPacket send_packet = 6;
+    FetchPackets fetch_packets = 7;
+    PurgeStore purge_store = 8;
+
+    // Device settings (name, PIN, Wi-Fi).
+    GetDeviceSettings get_device_settings = 9;
+    SetDeviceSettings set_device_settings = 10;
+
+    // Connection status.
+    GetStatus get_status = 11;
+
+    // Access control and power ops.
+    Auth auth = 12;
+    Reboot reboot = 13;
+    FactoryReset factory_reset = 14;
+    Bootloader bootloader = 15;
+  }
+}
+
+// A message from the radio to the client: a response (echoing the request's
+// id), an async push (id = 0), or an Error (id = 0 for pushes, the request's
+// id for failures). Exactly one `body` is set.
+message RadioToClient {
+  uint32 id = 1;
+
+  oneof body {
+    // PING response.
+    Pong pong = 2;
+
+    // GET_DEVICE_INFO response.
+    DeviceInfo device_info = 3;
+
+    // GET/SET_RADIO_SETTINGS response; async RadioSettingsChanged push
+    // (another client re-tuned) uses the same message, id = 0.
+    RadioSettings radio_settings = 4;
+
+    // SEND_PACKET response (async TxResult follows).
+    PacketAccepted packet_accepted = 5;
+
+    // One stored packet: async live push (id = 0) while connected, or a
+    // FetchPackets stream item (request's id).
+    PacketEntry packet_entry = 6;
+
+    // Terminates a FetchPackets stream (request's id).
+    FetchEnd fetch_end = 7;
+
+    // Async SEND_PACKET outcome (id = 0).
+    TxResult tx_result = 8;
+
+    // GET/SET_DEVICE_SETTINGS response; async DeviceSettingsChanged push
+    // (another client changed settings) uses the same message, id = 0.
+    DeviceSettings device_settings = 9;
+
+    // GET_STATUS response; async DeviceStatusChanged push (Wi-Fi state
+    // transition) uses the same message, id = 0.
+    Status status = 10;
+
+    // Ack for AUTH, REBOOT, FACTORY_RESET, PURGE_STORE. For REBOOT and
+    // FACTORY_RESET the device reboots shortly after sending this.
+    Ok ok = 11;
+
+    // Any request failed (id = the request's id) or a general error
+    // occurred. `message` is a short human-readable hint, not a contract.
+    Error error = 12;
+  }
+}
+
+// Generic acknowledgement.
+message Ok {}
+
+// An error. Code semantics are normative in docs/radio-protocol.md; the code
+// set is intentionally the plan-13 status table.
+message Error {
+  enum ErrorCode {
+    ERROR_CODE_UNSPECIFIED = 0;
+    // Unknown operation (radio predates a oneof variant, or a bug).
+    ERROR_CODE_BAD_COMMAND = 1;
+    // Wrong size/format/validation; the request was rejected atomically —
+    // nothing was applied.
+    ERROR_CODE_BAD_PAYLOAD = 2;
+    // TX in flight, first-owner lock active, or another busy condition.
+    ERROR_CODE_BUSY = 3;
+    // The radio refused or failed the transmission.
+    ERROR_CODE_TX_FAILED = 4;
+    // Radio init failed; the device answers but cannot use the air.
+    ERROR_CODE_NO_RADIO = 5;
+    // Feature absent on this board (capability-gated, plan 13 §7).
+    ERROR_CODE_NOT_SUPPORTED = 6;
+    // A PIN is set and this client has not authenticated (plan 13 §8).
+    ERROR_CODE_AUTH_REQUIRED = 7;
+  }
+
+  ErrorCode code = 1;
+
+  // Short human-readable hint for logs/UI. Not stable for parsing.
+  string message = 2;
+}
+
+// PING echo.
+message Ping {
+  // Arbitrary bytes, echoed back in Pong (≤ 500).
+  bytes payload = 1;
+}
+
+message Pong {
+  bytes payload = 1;
+}

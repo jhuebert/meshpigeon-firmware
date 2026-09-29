@@ -4,5 +4,8 @@
   "description": "MeshPigeon board-neutral radio core: framing, packet store, settings, clock, command processor",
   "license": "MIT",
   "frameworks": "*",
-  "platforms": "*"
+  "platforms": "*",
+  "build": {
+    "flags": ["-I src/nanopb", "-I src/generated"]
+  }
 }

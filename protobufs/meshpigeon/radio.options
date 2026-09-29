@@ -1,0 +1,7 @@
+# nanopb options for radio.proto — caps the static buffer each
+# string/bytes field generates on the device (nanopb default: 128 bytes).
+# Sizes mirror the limits documented in the .proto comments and enforced by
+# the firmware's validation (MESHPIGEON_MAX_RAW_PACKET).
+
+meshpigeon.SendPacket.raw max_size:255
+meshpigeon.PacketEntry.raw max_size:255

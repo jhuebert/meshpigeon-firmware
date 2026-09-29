@@ -1,0 +1,8 @@
+# nanopb options for envelope.proto — caps the static buffer each
+# string/bytes field generates on the device (nanopb default: 128 bytes).
+# Sizes mirror the limits documented in the .proto comments and enforced by
+# the firmware's validation (MESHPIGEON_MAX_FRAME_PAYLOAD).
+
+meshpigeon.Ping.payload max_size:500
+meshpigeon.Pong.payload max_size:500
+meshpigeon.Error.message max_size:64
