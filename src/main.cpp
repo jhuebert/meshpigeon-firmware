@@ -3,8 +3,8 @@
  *
  * Boot: load persisted settings, apply to the radio, start listening.
  * Loop: poll the radio for packets (store + live push), drain transports
- * (USB CDC, BLE), complete pending TX. No protocol, no keys — the app
- * decides everything (04-firmware).
+ * (USB CDC, BLE, Wi-Fi TCP), complete pending TX. No protocol, no keys —
+ * the app decides everything (04-firmware).
  */
 #if defined(MESHPIGEON_ESP32) || defined(MESHPIGEON_NRF52)
 
@@ -20,6 +20,9 @@
 #include "radio_sx1262.h"
 #endif
 #include "transports.h"
+#if defined(MESHPIGEON_HAS_WIFI)
+#include "wifi_transport.h"
+#endif
 
 #if defined(MESHPIGEON_ESP32)
 #include <esp_system.h>
@@ -52,6 +55,14 @@ static const uint32_t kStoreBytes = 65536;
 #endif
 
 // ---- board hooks -------------------------------------------------------------
+
+// Defined below; the hooks reach the board's own facilities through these.
+class BoardSettingsStore;
+static BoardSettingsStore* g_settings_store = NULL;
+static BleSink* g_ble = NULL;
+#if defined(MESHPIGEON_HAS_WIFI)
+static WifiTransport* g_wifi = NULL;
+#endif
 
 class BoardHooks : public IBoardHooks {
  public:
@@ -89,6 +100,89 @@ class BoardHooks : public IBoardHooks {
     NVIC_SystemReset();
 #endif
   }
+
+  void reboot() override {
+    delay(10);
+#if defined(ARDUINO_ARCH_ESP32)
+    ESP.restart();
+#else
+    NVIC_SystemReset();
+#endif
+  }
+
+  void factory_reset() override;  // defined below: needs BoardSettingsStore
+
+  void mac_suffix(char out[5]) override {
+    // The same two bytes the BLE name uses, so the derived device name and
+    // the advertised name agree (plan 13 §9).
+    char hex[5];
+#if defined(ARDUINO_ARCH_ESP32)
+    const NimBLEAddress addr = NimBLEDevice::getAddress();
+    const uint8_t* a = addr.getNative();  // little-endian: a[0] is the LSB
+    snprintf(hex, sizeof(hex), "%02X%02X", a[1], a[0]);
+#else
+    ble_gap_addr_t addr;
+    if (sd_ble_gap_addr_get(&addr) == NRF_SUCCESS) {
+      snprintf(hex, sizeof(hex), "%02X%02X", addr.addr[1], addr.addr[0]);
+    } else {
+      hex[0] = 0;
+    }
+#endif
+    strncpy(out, hex, 4);
+    out[4] = 0;
+  }
+
+  void set_device_name(const char* name) override {
+    if (g_ble) g_ble->set_name(name);
+  }
+
+  uint8_t ble_clients() override {
+    return g_ble ? g_ble->ble_clients() : 0;
+  }
+
+  void fill_status(StatusMessage* status) override {
+#if defined(MESHPIGEON_HAS_WIFI)
+    if (g_wifi) {
+      g_wifi->fill_status(status);
+      return;
+    }
+#endif
+    status->wifi_state = meshpigeon_Status_WifiState_WIFI_STATE_OFF;
+  }
+
+  void apply_wifi(const DeviceSettings& settings) override {
+#if defined(MESHPIGEON_HAS_WIFI)
+    if (g_wifi) g_wifi->apply(settings);
+#else
+    (void)settings;
+#endif
+  }
+
+  bool wifi_supported() const override {
+#if defined(MESHPIGEON_HAS_WIFI)
+    return true;
+#else
+    return false;
+#endif
+  }
+
+  pb_size_t fill_capabilities(meshpigeon_Capability* out,
+                              pb_size_t max) override {
+    pb_size_t n = 0;
+    auto add = [&](meshpigeon_Capability c) {
+      if (n < max) out[n] = c;
+      n++;
+    };
+    if (wifi_supported()) add(meshpigeon_Capability_CAPABILITY_WIFI_STA);
+#if defined(MESHPIGEON_PIN_VBAT_ADC) || defined(MESHPIGEON_BOARD_T1000E)
+    add(meshpigeon_Capability_CAPABILITY_BATTERY);
+#endif
+    add(meshpigeon_Capability_CAPABILITY_BLE);
+#if defined(ARDUINO_USB_CDC_ON_BOOT)
+    add(meshpigeon_Capability_CAPABILITY_USB_CDC);
+#endif
+    return n;
+  }
 };
 
 // ---- persisted settings + boot count -----------------------------------------
@@ -115,6 +209,44 @@ class BoardSettingsStore : public SettingsStore {
   }
   uint32_t load_boot_count() { return nvs_.getULong("boots", 0); }
   void save_boot_count(uint32_t n) { nvs_.putULong("boots", n); }
+
+  // Device settings: one NVS key per field, so a firmware that grows a
+  // field never has to migrate a blob.
+  bool save_device(const DeviceSettings& s) override {
+    nvs_.putString("name", s.name);
+    nvs_.putString("pin", s.pin);
+    nvs_.putUChar("wifie", s.wifi_enabled ? 1 : 0);
+    nvs_.putString("wifissid", s.wifi_ssid);
+    nvs_.putString("wifipass", s.wifi_password);
+    nvs_.putUShort("wifiport", s.wifi_port);
+    return true;
+  }
+  bool load_device(DeviceSettings* out) override {
+    out->clear();
+    if (!nvs_.isKey("pin")) return false;  // never written: defaults
+    strncpy(out->name, nvs_.getString("name", "").c_str(),
+            MESHPIGEON_NAME_MAX);
+    out->name[MESHPIGEON_NAME_MAX] = 0;
+    strncpy(out->pin, nvs_.getString("pin", "0000").c_str(), MESHPIGEON_PIN_MAX);
+    out->pin[MESHPIGEON_PIN_MAX] = 0;
+    out->wifi_enabled = nvs_.getUChar("wifie", 0) != 0;
+    strncpy(out->wifi_ssid, nvs_.getString("wifissid", "").c_str(),
+            MESHPIGEON_SSID_MAX);
+    out->wifi_ssid[MESHPIGEON_SSID_MAX] = 0;
+    strncpy(out->wifi_password, nvs_.getString("wifipass", "").c_str(),
+            MESHPIGEON_PASS_MAX);
+    out->wifi_password[MESHPIGEON_PASS_MAX] = 0;
+    out->wifi_port = nvs_.getUShort("wifiport", MESHPIGEON_WIFI_PORT_DEFAULT);
+    return true;
+  }
+  void wipe_device() {
+    nvs_.remove("name");
+    nvs_.remove("pin");
+    nvs_.remove("wifie");
+    nvs_.remove("wifissid");
+    nvs_.remove("wifipass");
+    nvs_.remove("wifiport");
+  }
 
  private:
   Preferences nvs_;
@@ -177,14 +309,90 @@ class BoardSettingsStore : public SettingsStore {
     f.write(buf, 4);
     f.close();
   }
+
+  // Device settings in one fixed-layout file; the length check keeps a
+  // truncated write from loading garbage.
+  bool save_device(const DeviceSettings& s) override {
+    DevBlob b;
+    memset(&b, 0, sizeof(b));
+    memcpy(b.name, s.name, sizeof(b.name) - 1);
+    memcpy(b.pin, s.pin, sizeof(b.pin) - 1);
+    b.wifi_enabled = s.wifi_enabled ? 1 : 0;
+    memcpy(b.wifi_ssid, s.wifi_ssid, sizeof(b.wifi_ssid) - 1);
+    memcpy(b.wifi_password, s.wifi_password, sizeof(b.wifi_password) - 1);
+    b.wifi_port = s.wifi_port;
+    InternalFS.begin();
+    InternalFS.remove("/dev.bin");  // FILE_O_WRITE appends, no truncate
+    Adafruit_LittleFS_Namespace::File f("dev.bin",
+                                        Adafruit_LittleFS_Namespace::FILE_O_WRITE, InternalFS);
+    if (!f) return false;
+    f.write((const uint8_t*)&b, sizeof(b));
+    f.close();
+    return true;
+  }
+  bool load_device(DeviceSettings* out) override {
+    out->clear();
+    InternalFS.begin();
+    if (!InternalFS.exists("/dev.bin")) return false;
+    Adafruit_LittleFS_Namespace::File f("dev.bin",
+                                        Adafruit_LittleFS_Namespace::FILE_O_READ, InternalFS);
+    if (!f) return false;
+    DevBlob b;
+    int n = f.read((uint8_t*)&b, sizeof(b));
+    f.close();
+    if (n != (int)sizeof(b)) return false;
+    b.name[sizeof(b.name) - 1] = 0;
+    b.pin[sizeof(b.pin) - 1] = 0;
+    b.wifi_ssid[sizeof(b.wifi_ssid) - 1] = 0;
+    b.wifi_password[sizeof(b.wifi_password) - 1] = 0;
+    strncpy(out->name, b.name, MESHPIGEON_NAME_MAX);
+    out->name[MESHPIGEON_NAME_MAX] = 0;
+    strncpy(out->pin, b.pin, MESHPIGEON_PIN_MAX);
+    out->pin[MESHPIGEON_PIN_MAX] = 0;
+    out->wifi_enabled = b.wifi_enabled != 0;
+    strncpy(out->wifi_ssid, b.wifi_ssid, MESHPIGEON_SSID_MAX);
+    out->wifi_ssid[MESHPIGEON_SSID_MAX] = 0;
+    strncpy(out->wifi_password, b.wifi_password, MESHPIGEON_PASS_MAX);
+    out->wifi_password[MESHPIGEON_PASS_MAX] = 0;
+    out->wifi_port = b.wifi_port;
+    return true;
+  }
+  void wipe_device() {
+    InternalFS.begin();
+    InternalFS.remove("/dev.bin");
+  }
+
+ private:
+  struct DevBlob {
+    char name[MESHPIGEON_NAME_MAX + 1];
+    char pin[MESHPIGEON_PIN_MAX + 1];
+    uint8_t wifi_enabled;
+    char wifi_ssid[MESHPIGEON_SSID_MAX + 1];
+    char wifi_password[MESHPIGEON_PASS_MAX + 1];
+    uint16_t wifi_port;
+  };
 };
 #endif
 
 // ---- main ---------------------------------------------------------------------
 
+void BoardHooks::factory_reset() {
+  // Device settings only: the radio tuning and the boot count survive
+  // (plan 13 §10.4) — a factory reset is "as it shipped", not "as new".
+  if (g_settings_store) g_settings_store->wipe_device();
+  reboot();
+}
+
 static PacketStore* g_store;
-static BoardSettingsStore* g_settings_store;
 static BoardHooks g_hooks;
+#if defined(MESHPIGEON_HAS_WIFI)
+// The mDNS name shares the derived device-name suffix (plan 13 §9/§10.2).
+static void wifi_hostname(char out[24]) {
+  char suffix[5];
+  g_hooks.mac_suffix(suffix);
+  snprintf(out, 24, "meshpigeon-%s", suffix);
+}
+#endif
 #if defined(MESHPIGEON_RADIO_LR1110)
 static Lr1110Radio* g_radio;
 #else
@@ -192,7 +400,6 @@ static Sx1262Radio* g_radio;
 #endif
 static CommandProcessor* g_processor;
 static UsbCdcSink g_usb;
-static BleSink g_ble;  // transports.h defines the platform's BLE sink class
 
 class ArduinoMillis : public IMillisecondClock {
  public:
@@ -241,12 +448,35 @@ void setup() {
                                      *g_radio, kBoardName, kFwVersion);
   g_processor->set_hooks(&g_hooks);
   g_usb.begin(*g_processor);  // sets the back-pointer; add_sink() alone leaves proc_ null
-  g_ble.begin(*g_processor, kBleName);
+  // transports.h defines the platform's BLE sink class.
+  g_ble = new BleSink();
+  g_ble->begin(*g_processor, kBleName);
+#if defined(MESHPIGEON_HAS_WIFI)
+  g_wifi = new WifiTransport();
+  char hostname[24];
+  wifi_hostname(hostname);
+  g_wifi->begin(*g_processor, hostname);
+#endif
 
   bool applied = g_radio->begin();
   if (applied) g_processor->boot();  // applies persisted settings
   // If the radio failed to init we still answer commands (GET_INFO works),
   // we just can't hear anything — the app will see apply failures.
+
+#if defined(MESHPIGEON_HAS_WIFI)
+  // A pigeon on a shelf with Wi-Fi enabled comes back up on the network
+  // with no app attached (plan 13 §10.1).
+  if (g_processor->device_settings().wifi_enabled) {
+    g_wifi->apply(g_processor->device_settings());
+  }
+#endif
+
+  // The effective name wins at boot too: a stored name is applied to the
+  // advertisement, otherwise the derived MeshPigeon-XXXX stands
+  // (plan 13 §9).
+  char effective[MESHPIGEON_NAME_MAX + 1];
+  g_processor->effective_name(effective);
+  g_ble->set_name(effective);
 
   // USB CDC takes a moment on some boards; don't block boot on it.
 #if defined(ARDUINO_ARCH_ESP32)
@@ -255,8 +485,12 @@ void setup() {
 }
 
 void loop() {
+  g_uptime.poll();
   g_usb.pump();
-  g_ble.pump();
+  g_ble->pump();
+#if defined(MESHPIGEON_HAS_WIFI)
+  g_wifi->pump();
+#endif
   radio_loop();
   delay(1);  // pace the loop; RX FIFO + IRQ tolerate this easily
 }

@@ -8,7 +8,7 @@
  *
  * Build:  pio run -e sim
  * Run:    .pio/build/sim/meshpigeon-sim --port 8765 [--loss 10] [--dup 5]
- *              [--traffic-ms 3000] [--store 5000]
+ *              [--traffic-ms 3000] [--store 5000] [--fake-wifi]
  */
 #ifdef MESHPIGEON_NATIVE
 
@@ -39,8 +39,61 @@ static MemorySettingsStore sim_settings;
 static SimRadio sim_radio;
 static PacketStore* g_store = NULL;
 static CommandProcessor* g_processor = NULL;
+static bool g_fake_wifi = false;
+
+// --fake-wifi: a scripted OFF -> CONNECTING -> CONNECTED state machine so
+// app CI can drive the Status/wifi paths without hardware (plan 13 §14.3.1).
+static meshpigeon_Status_WifiState g_fake_state =
+    meshpigeon_Status_WifiState_WIFI_STATE_OFF;
+static uint32_t g_fake_changed_ms = 0;
 
 static CommandProcessor& processor() { return *g_processor; }
+
+class SimHooks : public IBoardHooks {
+ public:
+  void mac_suffix(char out[5]) override {
+    strncpy(out, "A3F2", 5);
+    out[4] = 0;
+  }
+  void set_device_name(const char* name) override {
+    strncpy(name_, name, sizeof(name_) - 1);
+  }
+  void fill_status(StatusMessage* status) override {
+    // Scripted transitions: OFF -> CONNECTING (immediately) -> CONNECTED
+    // after ~2 s, driven off the sim clock.
+    if (g_fake_wifi) {
+      uint32_t now = sim_clock.millis();
+      if (g_fake_state == meshpigeon_Status_WifiState_WIFI_STATE_OFF &&
+          now - g_fake_changed_ms >= 0) {
+        g_fake_state = meshpigeon_Status_WifiState_WIFI_STATE_CONNECTING;
+        g_fake_changed_ms = now;
+      } else if (g_fake_state ==
+                     meshpigeon_Status_WifiState_WIFI_STATE_CONNECTING &&
+                 now - g_fake_changed_ms >= 2000) {
+        g_fake_state = meshpigeon_Status_WifiState_WIFI_STATE_CONNECTED;
+        g_fake_changed_ms = now;
+      }
+    }
+    status->wifi_state = g_fake_state;
+    if (g_fake_state == meshpigeon_Status_WifiState_WIFI_STATE_CONNECTED) {
+      strncpy(status->wifi_ssid, "sim-net", sizeof(status->wifi_ssid) - 1);
+      status->wifi_ssid[sizeof(status->wifi_ssid) - 1] = 0;
+      const uint8_t ip[4] = {192, 168, 1, 50};
+      memcpy(status->wifi_ipv4.bytes, ip, 4);
+      status->wifi_ipv4.size = 4;
+      status->wifi_port = 5000;
+      status->wifi_rssi = -55;
+    }
+  }
+  bool wifi_supported() const override { return g_fake_wifi; }
+
+  const char* name() const { return name_; }
+
+ private:
+  char name_[MESHPIGEON_NAME_MAX + 1] = {0};
+};
+
+static SimHooks sim_hooks;
 
 class Client : public IFrameSink {
  public:
@@ -48,7 +101,7 @@ class Client : public IFrameSink {
 
   void send_frame(const uint8_t* decoded, size_t len) override {
     uint8_t wire[FRAME_MAX_WIRE];
-    size_t n = frame_encode_wire(wire, decoded, len);
+    size_t n = frame_encode_envelope(wire, decoded, len);
     ssize_t r = send(fd_, wire, n, MSG_NOSIGNAL);
     (void)r;
   }
@@ -61,8 +114,7 @@ class Client : public IFrameSink {
     for (ssize_t i = 0; i < n; i++) {
       size_t res = reader_.feed(buf[i], frame_);
       if (res != 0 && res != (size_t)-1) {
-        processor().on_frame(frame_[0], frame_[1], frame_[2], frame_ + 3,
-                             res - 5, this);
+        processor().on_envelope(frame_, res, this);
       }
     }
     return true;
@@ -78,8 +130,10 @@ class Client : public IFrameSink {
 
 static std::vector<Client*> clients;
 
+
 static void sim_loop_tick(uint32_t traffic_ms) {
   sim_clock.advance(1);
+  uptime.poll();
   g_processor->poll();
 
   // Synthetic OTA traffic so connected apps see live packets.
@@ -115,8 +169,9 @@ int main(int argc, char** argv) {
     else if (!strcmp(argv[i], "--store") && i + 1 < argc) store_bytes = (uint32_t)atoi(argv[++i]);
     else if (!strcmp(argv[i], "--loss") && i + 1 < argc) sim_radio.set_loss((uint8_t)atoi(argv[++i]));
     else if (!strcmp(argv[i], "--dup") && i + 1 < argc) sim_radio.set_dup((uint8_t)atoi(argv[++i]));
+    else if (!strcmp(argv[i], "--fake-wifi")) g_fake_wifi = true;
     else if (!strcmp(argv[i], "--help")) {
-      printf("usage: meshpigeon-sim [--port N] [--traffic-ms N] [--store BYTES] [--loss N] [--dup N]\n");
+      printf("usage: meshpigeon-sim [--port N] [--traffic-ms N] [--store BYTES] [--loss N] [--dup N] [--fake-wifi]\n");
       return 0;
     }
   }
@@ -124,6 +179,7 @@ int main(int argc, char** argv) {
   g_store = new PacketStore(store_bytes);
   g_processor = new CommandProcessor(*g_store, uptime, sim_settings, sim_radio,
                                      "SIM", "0.1.0");
+  g_processor->set_hooks(&sim_hooks);
   g_processor->boot();
 
   signal(SIGPIPE, SIG_IGN);

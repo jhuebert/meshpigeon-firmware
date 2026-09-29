@@ -27,7 +27,7 @@ class UsbCdcSink : public IFrameSink {
 
   void send_frame(const uint8_t* decoded, size_t len) override {
     uint8_t wire[FRAME_MAX_WIRE];
-    size_t n = frame_encode_wire(wire, decoded, len);
+    size_t n = frame_encode_envelope(wire, decoded, len);
     Serial.write(wire, n);
     Serial.flush();
   }
@@ -37,8 +37,7 @@ class UsbCdcSink : public IFrameSink {
     while (Serial.available() > 0) {
       size_t res = reader_.feed((uint8_t)Serial.read(), frame_);
       if (res != 0 && res != (size_t)-1) {
-        proc_->on_frame(frame_[0], frame_[1], frame_[2], frame_ + 3, res - 5,
-                        this);
+        proc_->on_envelope(frame_, res, this);
       }
     }
   }
@@ -111,8 +110,7 @@ class BleSink : public IFrameSink, public NimBLEServerCallbacks,
     for (size_t i = 0; i < v.length(); i++) {
       size_t res = c.reader.feed(v.data()[i], c.frame);
       if (res != 0 && res != (size_t)-1) {
-        proc_->on_frame(c.frame[0], c.frame[1], c.frame[2], c.frame + 3,
-                        res - 5, this);
+        proc_->on_envelope(c.frame, res, this);
       }
     }
   }
@@ -122,7 +120,7 @@ class BleSink : public IFrameSink, public NimBLEServerCallbacks,
   // connection otherwise.
   void send_frame(const uint8_t* decoded, size_t len) override {
     uint8_t wire[FRAME_MAX_WIRE];
-    size_t n = frame_encode_wire(wire, decoded, len);
+    size_t n = frame_encode_envelope(wire, decoded, len);
     size_t off = 0;
     while (off < n) {
       size_t chunk = min(n - off, (size_t)20);
@@ -133,6 +131,16 @@ class BleSink : public IFrameSink, public NimBLEServerCallbacks,
 
   /** Board loop: RX is callback-driven and TX immediate — nothing to do. */
   void pump() {}
+
+  /** Apply a device-settings name: rename and re-advertise (plan 13 §9).
+   *  Live connections are unaffected; scanners see the new name. */
+  void set_name(const char* name) {
+    NimBLEDevice::setDeviceName(name);
+    server_->getAdvertising()->start();
+  }
+
+  /** Connected centrals, for Status.ble_clients. */
+  uint8_t ble_clients() { return (uint8_t)conns_.size(); }
 
  private:
   struct PerConn {
@@ -214,8 +222,7 @@ class BleSink : public IFrameSink {
     while (bleuart.available() > 0) {
       size_t res = reader_.feed((uint8_t)bleuart.read(), frame_);
       if (res != 0 && res != (size_t)-1) {
-        proc_->on_frame(frame_[0], frame_[1], frame_[2], frame_ + 3, res - 5,
-                        this);
+        proc_->on_envelope(frame_, res, this);
       }
     }
     if (drop_pending_) {
@@ -230,7 +237,7 @@ class BleSink : public IFrameSink {
   // thread; blocks only on a full queue, see class comment).
   void send_frame(const uint8_t* decoded, size_t len) override {
     uint8_t wire[FRAME_MAX_WIRE];
-    size_t n = frame_encode_wire(wire, decoded, len);
+    size_t n = frame_encode_envelope(wire, decoded, len);
     while (count_ == kQueueDepth) drain_step_blocking();
     Queued& q = queue_[(head_ + count_) % kQueueDepth];
     memcpy(q.buf, wire, n);
@@ -238,6 +245,16 @@ class BleSink : public IFrameSink {
     q.off = 0;
     count_++;
   }
+
+  /** Apply a device-settings name: rename and re-advertise (plan 13 §9).
+   *  Live connections are unaffected; scanners see the new name. */
+  void set_name(const char* name) {
+    Bluefruit.setName(name);
+    Bluefruit.Advertising.start(0);
+  }
+
+  /** Connected centrals (0 or 1), for Status.ble_clients. */
+  uint8_t ble_clients() { return connected() ? 1 : 0; }
 
  private:
   struct Queued {
