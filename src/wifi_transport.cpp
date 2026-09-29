@@ -165,7 +165,11 @@ void WifiTransport::accept_clients() {
     }
     return;
   }
-  // At capacity: the extra client is dropped rather than queued.
+  // At capacity: the extra client is turned away, not queued — and closing
+  // it is the point. Letting the WiFiClient go without stop() leaves the
+  // peer connected and holding a slot of the server's own: a silent
+  // connection the app can see in a port scan and never answer on.
+  c.stop();
 }
 
 void WifiTransport::pump_clients() {
