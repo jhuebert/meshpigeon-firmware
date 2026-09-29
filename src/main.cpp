@@ -71,7 +71,6 @@ static void reboot_now() {
   NVIC_SystemReset();
 #endif
 }
-
 class BoardHooks : public IBoardHooks {
  public:
   uint16_t battery_mv() override {
@@ -98,6 +97,11 @@ class BoardHooks : public IBoardHooks {
 #endif
   }
 
+  // NOT a ROM/DFU entry yet: this is a plain restart, the same as reboot().
+  // Real in-app flashing (ESP32 download mode, nRF52 DFU via the UICR
+  // bootloader address) is board work still to do, so the protocol doc says
+  // BOOTLOADER restarts rather than claiming a DFU it does not perform. The
+  // operation stays ungated either way: flashing must work on a locked node.
   void reboot_to_bootloader() override { reboot_now(); }
 
   void reboot() override { reboot_now(); }

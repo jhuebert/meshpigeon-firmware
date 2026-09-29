@@ -247,5 +247,8 @@ message Reboot {}
 // ring), then reboots: "as it shipped". Requires auth when a PIN is set.
 message FactoryReset {}
 
-// Reboots into bootloader/DFU for in-app flashing.
+// Reboots into bootloader/DFU for in-app flashing. Never gated by auth.
+// NOTE: the firmware today performs a plain restart, not a real ROM/DFU
+// entry — the operation is ungated so that flashing always works on a
+// locked node, and the board-specific entry sequence is still to come.
 message Bootloader {}

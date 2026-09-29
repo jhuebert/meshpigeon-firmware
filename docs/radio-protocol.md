@@ -90,7 +90,7 @@ without breaking older firmware (which skips what it does not know).
 | `Auth` | `Ok` | unlocks *this* connection (§8) |
 | `Reboot` | `Ok`, then restart | requires auth |
 | `FactoryReset` | `Ok`, then wipe + restart | requires auth (§8) |
-| `Bootloader` | `Ok`, then restart into DFU | **never** gated — flashing must work on a locked node |
+| `Bootloader` | `Ok`, then restart | **never** gated — flashing must work on a locked node. A plain restart today: real ROM/DFU entry is board work still to do (§13) |
 
 Async pushes (`id = 0`), broadcast to every connected client:
 
@@ -385,9 +385,10 @@ Deliberately, per the product's guiding principles:
   width or meaning, or changing the framing itself. Every bump after 2 ships
   with a paragraph here justifying it.
 - Reserved for later, capability-gated, and not implemented today: RTC
-  wall-clock, Ethernet, LED/button behaviour. Rejected outright (it would
-  give the firmware opinions): anything about packet content, identity, or
-  keys.
+  wall-clock, Ethernet, LED/button behaviour, and real ROM/DFU entry for
+  `Bootloader` (which today restarts the board, ungated). Rejected outright
+  (it would give the firmware opinions): anything about packet content,
+  identity, or keys.
 
 ## 14. Reference
 

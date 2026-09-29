@@ -214,7 +214,10 @@ typedef struct _meshpigeon_FactoryReset {
     char dummy_field;
 } meshpigeon_FactoryReset;
 
-/* Reboots into bootloader/DFU for in-app flashing. */
+/* Reboots into bootloader/DFU for in-app flashing. Never gated by auth.
+ NOTE: the firmware today performs a plain restart, not a real ROM/DFU
+ entry — the operation is ungated so that flashing always works on a
+ locked node, and the board-specific entry sequence is still to come. */
 typedef struct _meshpigeon_Bootloader {
     char dummy_field;
 } meshpigeon_Bootloader;
