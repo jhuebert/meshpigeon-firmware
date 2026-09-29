@@ -13,12 +13,16 @@ namespace meshpigeon {
  * One retained packet. Raw on-air bytes only — the firmware cannot read
  * them (no protocol, no keys), which is exactly what maximizes capacity.
  *
- * Serialized layout (little-endian):
- *   [seq:u32][uptime_ms:u32][rssi:i8][snr:i8][len:u8][flags:u8][raw:len]
+ * This is the internal storage format, not the wire format: the interface
+ * re-encodes each entry as a PacketEntry protobuf message at delivery/fetch
+ * time (plan 14 §4), so nothing here constrains the schema.
+ *
+ * On-ring layout (little-endian):
+ *   [uptime_ms:u64][seq:u32][rssi:i8][snr:i8][flags:u8][len:u8][raw:len]
  */
 struct StoredPacket {
   uint32_t seq;
-  uint32_t uptime_ms;
+  uint64_t uptime_ms;  // the monotonic 64-bit uptime clock (plan 14 §6)
   int8_t rssi;
   int8_t snr;
   uint8_t flags;  // 0x01 = sent by us (TX), 0x02 = received
@@ -26,13 +30,13 @@ struct StoredPacket {
   uint8_t raw[MESHPIGEON_MAX_RAW_PACKET];
 };
 
-// seq + uptime + rssi + snr + len + flags
-static const size_t kStoredPacketOverhead = 12;
+// uptime(64) + seq + rssi + snr + len + flags
+static const size_t kStoredPacketOverhead = 16;
 
 /**
  * Byte-budgeted ring of retained packets. The store holds a fixed pool of
- * `capacity()` BYTES; each entry costs 12 bytes of header plus its exact
- * payload length, so a 30-byte MeshCore packet costs ~42 bytes instead of
+ * `capacity()` BYTES; each entry costs 16 bytes of header plus its exact
+ * payload length, so a 30-byte MeshCore packet costs ~46 bytes instead of
  * a max-size slot. Real packets vary 5-10x in size — budgeting bytes
  * instead of packet slots is what makes the retention targets fit in RAM.
  *
@@ -57,7 +61,7 @@ class PacketStore {
 
   /** Append a packet; drops the oldest on overflow. Returns assigned seq
    *  (0 if the packet was dropped without ever entering the store). */
-  uint32_t append(uint32_t uptime_ms, int8_t rssi, int8_t snr, uint8_t flags,
+  uint32_t append(uint64_t uptime_ms, int8_t rssi, int8_t snr, uint8_t flags,
                   const uint8_t* raw, uint8_t len);
 
   /** Copy the entry with the given seq into `out`. False if absent. */
@@ -118,9 +122,10 @@ class PacketStore {
 
  private:
   // On-ring record header, little-endian, followed by exactly `len` bytes.
+  // The u64 comes first so the struct packs to exactly 16 bytes.
   struct Header {
+    uint64_t uptime_ms;
     uint32_t seq;
-    uint32_t uptime_ms;
     int8_t rssi;
     int8_t snr;
     uint8_t flags;

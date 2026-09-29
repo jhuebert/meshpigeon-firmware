@@ -63,18 +63,19 @@ uint16_t frame_crc(const uint8_t* frame, size_t frame_len) {
 
 size_t frame_build(uint8_t* out, uint8_t cmd, uint8_t nonce, uint8_t status,
                    const uint8_t* payload, size_t payload_len) {
-  out[0] = cmd;
-  out[1] = nonce;
-  out[2] = status;
+  // The cmd/nonce/status arguments are ignored since v2: a frame is just the
+  // serialized envelope plus its CRC.
+  (void)cmd;
+  (void)nonce;
+  (void)status;
   if (payload_len > 0 && payload != NULL) {
-    memcpy(&out[3], payload, payload_len);
+    memcpy(out, payload, payload_len);
   }
-  size_t body = 3 + payload_len;
   uint16_t crc = 0;
-  crc16_ccitt(&crc, out, body);
-  out[body] = (uint8_t)(crc & 0xFF);
-  out[body + 1] = (uint8_t)(crc >> 8);
-  return body + 2;
+  crc16_ccitt(&crc, out, payload_len);
+  out[payload_len] = (uint8_t)(crc & 0xFF);
+  out[payload_len + 1] = (uint8_t)(crc >> 8);
+  return payload_len + 2;
 }
 
 size_t frame_encode_wire(uint8_t* out, const uint8_t* decoded,
@@ -82,6 +83,18 @@ size_t frame_encode_wire(uint8_t* out, const uint8_t* decoded,
   size_t n = cobs_encode(out, decoded, decoded_len);
   out[n++] = 0x00;  // frame delimiter
   return n;
+}
+
+size_t frame_encode_envelope(uint8_t* out, const uint8_t* envelope,
+                             size_t envelope_len) {
+  uint8_t with_crc[FRAME_MAX_DECODED];
+  if (envelope_len + 2 > sizeof(with_crc)) return 0;
+  memcpy(with_crc, envelope, envelope_len);
+  uint16_t crc = 0;
+  crc16_ccitt(&crc, envelope, envelope_len);
+  with_crc[envelope_len] = (uint8_t)(crc & 0xFF);
+  with_crc[envelope_len + 1] = (uint8_t)(crc >> 8);
+  return frame_encode_wire(out, with_crc, envelope_len + 2);
 }
 
 size_t FrameReader::feed(uint8_t byte, uint8_t* frame_out) {
@@ -92,12 +105,12 @@ size_t FrameReader::feed(uint8_t byte, uint8_t* frame_out) {
     }
     size_t n = cobs_decode(frame_out, wire_, wire_len_);
     reset();
-    if (n < 5 || n > FRAME_MAX_DECODED) return (size_t)-1;  // malformed
+    if (n < 2 || n > FRAME_MAX_DECODED) return (size_t)-1;  // malformed
     if (frame_crc(frame_out, n) !=
         (uint16_t)(frame_out[n - 2] | (frame_out[n - 1] << 8))) {
       return (size_t)-1;  // CRC failure
     }
-    return n;
+    return n - 2;  // payload only: the CRC is verified, not handed on
   }
   if (wire_len_ >= sizeof(wire_)) {
     overflow_ = true;  // wait for the next delimiter, then drop

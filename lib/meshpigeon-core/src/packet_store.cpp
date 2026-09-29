@@ -5,7 +5,7 @@
 
 namespace meshpigeon {
 
-static const size_t kRecordOverhead = kStoredPacketOverhead;  // 12-byte header
+static const size_t kRecordOverhead = kStoredPacketOverhead;  // 16-byte header
 
 PacketStore::PacketStore(uint32_t capacity_bytes)
     : capacity_(capacity_bytes), wrap_(capacity_bytes) {
@@ -56,7 +56,7 @@ void PacketStore::pop_oldest() {
   dropped_++;
 }
 
-uint32_t PacketStore::append(uint32_t uptime_ms, int8_t rssi, int8_t snr,
+uint32_t PacketStore::append(uint64_t uptime_ms, int8_t rssi, int8_t snr,
                              uint8_t flags, const uint8_t* raw, uint8_t len) {
   if (len > MESHPIGEON_MAX_RAW_PACKET) len = MESHPIGEON_MAX_RAW_PACKET;
   uint32_t need = (uint32_t)(kRecordOverhead + len);
@@ -87,7 +87,7 @@ uint32_t PacketStore::append(uint32_t uptime_ms, int8_t rssi, int8_t snr,
     }
   }
 
-  Header h = {next_seq_, uptime_ms, rssi, snr, flags, len};
+  Header h = {uptime_ms, next_seq_, rssi, snr, flags, len};
   write_header(tail_off_, h);
   memcpy(buf_ + tail_off_ + kRecordOverhead, raw, len);
   tail_off_ += need;

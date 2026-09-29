@@ -11,18 +11,21 @@ namespace meshpigeon {
 /**
  * Frame layout on the wire (uniform across BLE / USB CDC / Wi-Fi TCP):
  *
- *   decoded frame: [cmd:1][nonce:1][status_or_0:1][payload:n][crc16:2]
+ *   decoded frame: [payload:n][crc16:2]
  *   wire frame:    COBS_encode(decoded) followed by a single 0x00 delimiter
  *
- * - crc16 is CRC-16/CCITT-FALSE (poly 0x1021, init 0xFFFF) over
- *   cmd + nonce + status + payload, little-endian on the wire.
- * - Requests use status 0x00. Responses use the same command code as the
- *   request and carry the request's nonce; status != 0 means error
- *   (see STATUS_* codes), and payload holds a short message when errored.
- * - Async frames use their own CMD_* code, nonce 0, status 0.
+ * Since v2 the payload is a serialized protobuf envelope — one
+ * ClientToRadio or RadioToClient per frame (docs/radio-protocol.md); the
+ * v1 [cmd][nonce][status] header is gone. The envelope carries its own
+ * correlation id, operation and error code.
+ *
+ * - crc16 is CRC-16/CCITT-FALSE (poly 0x1021, init 0xFFFF) over the
+ *   serialized envelope, little-endian on the wire.
+ * - Requests and responses both echo the envelope's id; async pushes
+ *   (id = 0) use the same framing.
  */
 
-// Max bytes a decoded frame can occupy (cmd+nonce+status+payload+crc16).
+// Max bytes a decoded frame can occupy (payload + crc16).
 #define FRAME_MAX_DECODED (3 + MESHPIGEON_MAX_FRAME_PAYLOAD + 2)
 // COBS worst case adds one overhead byte per 254 plus terminator.
 #define FRAME_MAX_WIRE (FRAME_MAX_DECODED + (FRAME_MAX_DECODED + 253) / 254 + 1)
@@ -47,14 +50,25 @@ size_t cobs_decode(uint8_t* dst, const uint8_t* src, size_t src_len);
 uint16_t frame_crc(const uint8_t* frame, size_t frame_len);
 
 /**
- * Build a full decoded frame (cmd/nonce/status/payload + crc) into `out`.
- * `out` must hold payload_len + 5 bytes. Returns total decoded length.
+ * Build a decoded frame (envelope payload + crc) into `out`. `out` must
+ * hold payload_len + 2 bytes. Returns total decoded length. Boards send
+ * through the envelope, so this is a convenience for tests and fixtures.
  */
 size_t frame_build(uint8_t* out, uint8_t cmd, uint8_t nonce, uint8_t status,
                    const uint8_t* payload, size_t payload_len);
 
-/** Encode a decoded frame to wire format. `out` must hold FRAME_MAX_WIRE. */
+/** Encode a decoded frame (payload + trailing CRC) to wire format.
+ *  `out` must hold FRAME_MAX_WIRE. */
 size_t frame_encode_wire(uint8_t* out, const uint8_t* decoded, size_t decoded_len);
+
+/**
+ * Encode one serialized envelope to wire format: CRC-16 first (little-endian),
+ * then COBS, then the 0x00 delimiter. This is what every transport calls
+ * with the envelope it got from CommandProcessor; `out` must hold
+ * FRAME_MAX_WIRE.
+ */
+size_t frame_encode_envelope(uint8_t* out, const uint8_t* envelope,
+                             size_t envelope_len);
 
 /**
  * Frame reader: accumulates wire bytes until the 0x00 delimiter and emits
@@ -73,10 +87,10 @@ class FrameReader {
 
   /**
    * Feed one wire byte. If a complete frame is available after this call,
-   * `frame_out` (must hold FRAME_MAX_DECODED) receives the decoded bytes
-   * and the function returns its length; returns 0 otherwise; returns
-   * (size_t)-1 if a frame was received but dropped (CRC/decode failure or
-   * overflow).
+   * `frame_out` (must hold FRAME_MAX_DECODED) receives the decoded envelope
+   * — the CRC is verified but not included — and the function returns its
+   * length; returns 0 otherwise; returns (size_t)-1 if a frame was received
+   * but dropped (CRC/decode failure or overflow).
    */
   size_t feed(uint8_t byte, uint8_t* frame_out);
 
