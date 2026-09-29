@@ -394,6 +394,19 @@ static void radio_loop() {
 }
 
 void setup() {
+#if defined(ARDUINO_ARCH_ESP32)
+  // Size the USB CDC RX queue to hold a whole maximum frame, BEFORE begin()
+  // takes its 256-byte default. HWCDC::begin() only applies the default when
+  // no queue exists yet, and HWCDC's ISR drops the remainder of a 64-byte
+  // chunk the moment xQueueSendFromISR fails -- silently, with no log
+  // anywhere. A host that writes a max-size frame in one burst therefore
+  // loses bytes, the frame is dropped exactly as a CRC failure is, and a
+  // 255-byte SendPacket (the silicon cap, explicitly supported) lands about
+  // 10% of the time. At the default 256 the transport cannot carry
+  // MESHPIGEON_MAX_FRAME_PAYLOAD at all; measured, 252 B in was 20/20 and
+  // 258 B in was 2/20.
+  Serial.setRxBufferSize(FRAME_MAX_WIRE + 64);
+#endif
   Serial.begin(115200);
 
 #if defined(MESHPIGEON_NRF52) && defined(MESHPIGEON_BOARD_T1000E)
