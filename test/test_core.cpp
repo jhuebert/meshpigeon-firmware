@@ -268,6 +268,10 @@ static void set_str(char* dst, size_t cap, const char* src) {
   strncpy(dst, src, cap - 1);
 }
 
+// Defined with the device-settings tests; used by any test that needs the
+// node locked down before it can observe a filter.
+static RecordingSink* lock_with_pin(const char* pin);
+
 // ---- tests: framing -----------------------------------------------------------
 
 void test_cobs_roundtrip() {
@@ -1074,6 +1078,60 @@ void test_radio_changed_broadcast_to_others() {
   TEST_ASSERT_EQUAL(0, other.at(0).id());  // async push
   TEST_ASSERT_EQUAL(1, other.at(0).m().body.radio_settings.config_epoch);
   proc->remove_sink(&other);
+}
+
+void test_radio_changed_push_reaches_only_authorized_clients() {
+  // GetRadioSettings is auth-gated, so the push of the very same read model
+  // has to be gated by the same question: a client that may not ask for the
+  // tuning has no business being handed it because someone else retuned.
+  // Without this, anyone who merely attached a socket learned the node's
+  // frequency, bandwidth, spreading factor and TX power from the first
+  // retune by anybody.
+  const uint8_t pkt[] = {0x45};
+  proc->on_packet_received(-80, 10, pkt, sizeof(pkt));
+
+  lock_with_pin("1234");  // the fixture's sink wrote the PIN: it is inside
+  RecordingSink stranger;
+  proc->add_sink(&stranger);
+  sink->clear();
+  stranger.clear();
+
+  ClientToRadioMessage tune = request(1);
+  tune.which_body = kOpSetRadioSettings;
+  tune.body.set_radio_settings.has_settings = true;
+  RadioSettingsMessage& m = tune.body.set_radio_settings.settings;
+  m.freq_hz = 906875000;
+  m.bandwidth_hz = 125000;
+  m.sf = 9;
+  m.cr = 5;
+  send(tune, sink);
+
+  // The issuer is answered, the authorized peer is pushed to, the stranger
+  // hears nothing at all.
+  TEST_ASSERT_EQUAL(1, sink->count());
+  TEST_ASSERT_EQUAL(meshpigeon_RadioToClient_radio_settings_tag,
+                    sink->at(0).which());
+  TEST_ASSERT_EQUAL(0, stranger.count());
+  TEST_ASSERT_EQUAL(0, sink->undecoded());
+
+  // Once it authenticates, the same client is in the loop again — so the
+  // filter is the auth state, not a dropped push.
+  ClientToRadioMessage auth = request(2);
+  auth.which_body = kOpAuth;
+  set_str(auth.body.auth.pin, sizeof(auth.body.auth.pin), "1234");
+  send(auth, &stranger);
+  TEST_ASSERT_EQUAL(meshpigeon_RadioToClient_ok_tag, stranger.at(0).which());
+  stranger.clear();
+  tick(6 * 60 * 1000);  // past the first-owner window, so the retune below
+                        // is not refused as BUSY
+  tune.id = 3;
+  m.freq_hz = 868100000;
+  send(tune, sink);
+  TEST_ASSERT_EQUAL(1, stranger.count());
+  TEST_ASSERT_EQUAL(meshpigeon_RadioToClient_radio_settings_tag,
+                    stranger.at(0).which());
+  TEST_ASSERT_EQUAL(868100000u, stranger.at(0).m().body.radio_settings.freq_hz);
+  proc->remove_sink(&stranger);
 }
 
 // ---- tests: packet store over the wire ------------------------------------------
@@ -2097,6 +2155,23 @@ void test_status_reads_the_hooks() {
   TEST_ASSERT_EQUAL(2, m.wifi_tcp_clients);
 }
 
+/** A core with no board hooks at all still answers Status honestly. */
+void test_status_without_hooks_reports_no_link() {
+  class BareHooks : public IBoardHooks {};
+  BareHooks bare;
+  proc->set_hooks(&bare);
+  ClientToRadioMessage req = request(1);
+  req.which_body = kOpGetStatus;
+  send(req, sink);
+  TEST_ASSERT_EQUAL(meshpigeon_RadioToClient_status_tag, sink->at(0).which());
+  const StatusMessage& m = sink->at(0).m().body.status;
+  // OFF means "no link", and a hook that says nothing is a board with no
+  // link — not WIFI_STATE_UNSPECIFIED, which no client can act on.
+  TEST_ASSERT_EQUAL(meshpigeon_Status_WifiState_WIFI_STATE_OFF, m.wifi_state);
+  TEST_ASSERT_EQUAL(0, m.ble_clients);
+  TEST_ASSERT_EQUAL(0, m.wifi_tcp_clients);
+}
+
 void test_status_pushed_on_wifi_transition() {
   sink->clear();
   proc->on_wifi_state_changed();
@@ -2208,6 +2283,7 @@ int main() {
   RUN_TEST(test_retune_during_tx_is_busy_and_leaves_the_radio_usable);
   RUN_TEST(test_first_owner_lock_honors_only_first_set);
   RUN_TEST(test_radio_changed_broadcast_to_others);
+  RUN_TEST(test_radio_changed_push_reaches_only_authorized_clients);
   RUN_TEST(test_send_packet_refuses_a_store_that_cannot_take_it);
   RUN_TEST(test_send_packet_roundtrip);
   RUN_TEST(test_send_packet_tx_failure_reports_result);
@@ -2244,6 +2320,7 @@ int main() {
   RUN_TEST(test_factory_reset);
   RUN_TEST(test_reboot_and_bootloader);
   RUN_TEST(test_status_reads_the_hooks);
+  RUN_TEST(test_status_without_hooks_reports_no_link);
   RUN_TEST(test_status_never_inherits_the_previous_response);
   RUN_TEST(test_status_pushed_on_wifi_transition);
   RUN_TEST(test_uptime_is_64_bit_across_the_millis_wrap);

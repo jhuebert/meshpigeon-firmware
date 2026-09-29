@@ -135,10 +135,11 @@ void CommandProcessor::broadcast_response(IFrameSink* except,
   if (len == 0) return;
   for (size_t i = 0; i < num_sinks_; i++) {
     if (sinks_[i] == NULL || sinks_[i] == except) continue;
-    // `authorized_only` is for the two pushes that carry protected material:
-    // a broadcast is not an operation, so without it a stranger who merely
-    // attached a socket would collect the Wi-Fi passphrase from every rename
-    // and every packet off the air (docs/radio-protocol.md §8.3, §10).
+    // `authorized_only` is for the three pushes that carry protected
+    // material: a broadcast is not an operation, so without it a stranger
+    // who merely attached a socket would collect the Wi-Fi passphrase from
+    // every rename, every packet off the air, and the node's tuning from
+    // every retune by someone else (docs/radio-protocol.md §3, §8.2).
     if (authorized_only && !is_authorized(sinks_[i])) continue;
     sinks_[i]->send_frame(buf, len);
   }
@@ -269,7 +270,11 @@ void CommandProcessor::emit_tx_result(uint32_t seq, bool ok) {
 void CommandProcessor::notify_radio_changed(IFrameSink* except) {
   begin_response(0);
   build_radio_settings();
-  broadcast_response(except);
+  // GetRadioSettings is auth-gated, so this push of the same read model is
+  // filtered by the same question: a client that may not ask for the tuning
+  // has no business being told it. Costs an authorized peer nothing — they
+  // are exactly the recipients the filter keeps.
+  broadcast_response(except, /*authorized_only=*/true);
 }
 
 void CommandProcessor::notify_device_settings_changed(IFrameSink* except) {
@@ -297,7 +302,10 @@ bool CommandProcessor::auth_backoff_active() const {
 }
 
 void CommandProcessor::note_auth_failure() {
-  auth_fails_++;
+  // Saturating, not wrapping: a uint8_t that rolled back to 0 would hand the
+  // attacker a free attempt every time it came round (the window is only
+  // re-armed above the threshold, and a reset count is below it).
+  if (auth_fails_ < 0xFF) auth_fails_++;
   if (auth_fails_ > kAuthFailsBeforeDelay) {
     auth_backoff_until_ = clock_.uptime_ms64() + kAuthFailDelayMs;
   }

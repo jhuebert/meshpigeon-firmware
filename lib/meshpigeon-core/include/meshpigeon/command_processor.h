@@ -73,8 +73,12 @@ class IBoardHooks {
   /** TCP sockets on the Wi-Fi server, for Status.wifi_tcp_clients. */
   virtual uint8_t wifi_tcp_clients() { return 0; }
   /** Fill a Status from the board's live link state (Wi-Fi etc). Must not
-   *  touch the three *_clients counts: those are the core's, it owns them. */
-  virtual void fill_status(StatusMessage* status) { (void)status; }
+   *  touch the three *_clients counts: those are the core's, it owns them.
+   *  The default claims a board with no link to report, not "unknown" —
+   *  a hook that says nothing is a board that has no Wi-Fi. */
+  virtual void fill_status(StatusMessage* status) {
+    status->wifi_state = meshpigeon_Status_WifiState_WIFI_STATE_OFF;
+  }
   /** Device settings changed: the link reacts (connect/disconnect/rebind).
    *  No-op on boards without the Wi-Fi capability. */
   virtual void apply_wifi(const DeviceSettings& settings) {
@@ -189,9 +193,10 @@ class CommandProcessor {
   void deliver(IFrameSink* to);
   /** Push response_ to every sink but `except`. `authorized_only` restricts
    *  it to connections that could call the gated operations — required for
-   *  the two pushes that carry protected material: the DeviceSettings read
-   *  model (the Wi-Fi passphrase) and the live PacketEntry (the raw mesh
-   *  bytes FetchPackets is gated behind). */
+   *  the three pushes that carry protected material: the DeviceSettings read
+   *  model (the Wi-Fi passphrase), the live PacketEntry (the raw mesh bytes
+   *  FetchPackets is gated behind) and the RadioSettings re-tune (which
+   *  GetRadioSettings is gated behind). */
   void broadcast_response(IFrameSink* except, bool authorized_only = false);
 
   void send_error(uint32_t id, ErrorCode code, IFrameSink* to);
