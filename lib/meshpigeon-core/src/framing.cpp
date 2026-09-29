@@ -38,20 +38,26 @@ size_t cobs_encode(uint8_t* dst, const uint8_t* src, size_t src_len) {
   return (size_t)(dst - dst_start);
 }
 
-size_t cobs_decode(uint8_t* dst, const uint8_t* src, size_t src_len) {
+size_t cobs_decode(uint8_t* dst, const uint8_t* src, size_t src_len,
+                   size_t dst_cap) {
   if (src_len == 0) return 0;
-  uint8_t* dst_start = dst;
+  size_t written = 0;
   const uint8_t* end = src + src_len;
 
   while (src < end) {
     uint8_t code = *src++;
     if (code == 0) return 0;  // interior zero: malformed
     size_t block = code - 1;
-    if ((size_t)(end - src) < block) return 0;
-    for (size_t i = 0; i < block; i++) *dst++ = *src++;
-    if (code < 0xFF && src < end) *dst++ = 0;
+    if ((size_t)(end - src) < block) return 0;  // truncated run
+    // Every write is checked against the cap, so no input can overrun dst.
+    if (written + block > dst_cap) return 0;
+    for (size_t i = 0; i < block; i++) dst[written++] = *src++;
+    if (code < 0xFF && src < end) {
+      if (written >= dst_cap) return 0;
+      dst[written++] = 0;
+    }
   }
-  return (size_t)(dst - dst_start);
+  return written;
 }
 
 uint16_t frame_crc(const uint8_t* frame, size_t frame_len) {
@@ -94,9 +100,11 @@ size_t FrameReader::feed(uint8_t byte, uint8_t* frame_out) {
       reset();
       return 0;
     }
-    size_t n = cobs_decode(frame_out, wire_, wire_len_);
+    // The cap is what makes this safe: a wire body long enough to decode
+    // past frame_out is rejected here, never written.
+    size_t n = cobs_decode(frame_out, wire_, wire_len_, FRAME_MAX_DECODED);
     reset();
-    if (n < 2 || n > FRAME_MAX_DECODED) return (size_t)-1;  // malformed
+    if (n < 2) return (size_t)-1;  // malformed, or longer than any frame
     if (frame_crc(frame_out, n) !=
         (uint16_t)(frame_out[n - 2] | (frame_out[n - 1] << 8))) {
       return (size_t)-1;  // CRC failure

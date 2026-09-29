@@ -41,10 +41,16 @@ size_t crc16_ccitt(uint16_t* crc_out, const uint8_t* data, size_t len,
 size_t cobs_encode(uint8_t* dst, const uint8_t* src, size_t src_len);
 
 /**
- * COBS-decode `src` (without delimiter) into `dst`. `dst` must hold at
- * least src_len bytes. Returns decoded length, or 0 on malformed input.
+ * COBS-decode `src` (without delimiter) into `dst`, which must hold at
+ * most `dst_cap` bytes. Returns the decoded length, or 0 on malformed input
+ * or if the decoded form would not fit.
+ *
+ * `dst_cap` is not advisory: a COBS body expands by up to 3 bytes over the
+ * decoded length, so a hostile stream that fills FrameReader's wire buffer
+ * would otherwise write past the caller's frame buffer.
  */
-size_t cobs_decode(uint8_t* dst, const uint8_t* src, size_t src_len);
+size_t cobs_decode(uint8_t* dst, const uint8_t* src, size_t src_len,
+                   size_t dst_cap);
 
 /** Compute the CRC16 over a decoded frame (all bytes except the last 2). */
 uint16_t frame_crc(const uint8_t* frame, size_t frame_len);
@@ -90,7 +96,8 @@ class FrameReader {
    * `frame_out` (must hold FRAME_MAX_DECODED) receives the decoded envelope
    * — the CRC is verified but not included — and the function returns its
    * length; returns 0 otherwise; returns (size_t)-1 if a frame was received
-   * but dropped (CRC/decode failure or overflow).
+   * but dropped (CRC/decode failure, a body too long for `frame_out`, or
+   * overflow).
    */
   size_t feed(uint8_t byte, uint8_t* frame_out);
 

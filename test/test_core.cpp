@@ -268,7 +268,7 @@ void test_cobs_roundtrip() {
   uint8_t enc[64];
   uint8_t dec[64];
   size_t n = cobs_encode(enc, src, sizeof(src));
-  size_t m = cobs_decode(dec, enc, n);
+  size_t m = cobs_decode(dec, enc, n, sizeof(dec));
   TEST_ASSERT_EQUAL(sizeof(src), m);
   TEST_ASSERT_EQUAL_MEMORY(src, dec, sizeof(src));
 }
@@ -278,7 +278,64 @@ void test_cobs_empty() {
   uint8_t dec[4];
   size_t n = cobs_encode(enc, nullptr, 0);
   TEST_ASSERT_EQUAL(1, n);
-  TEST_ASSERT_EQUAL(0, cobs_decode(dec, enc, n));  // empty is not a frame here
+  TEST_ASSERT_EQUAL(0, cobs_decode(dec, enc, n, sizeof(dec)));  // empty is not a frame here
+}
+
+void test_cobs_decode_respects_the_destination_cap() {
+  // A COBS body expands by up to 3 bytes over the decoded length, so an
+  // unbounded decode writes past the caller's frame buffer. The cap is what
+  // makes an attacker-sized frame a drop instead of memory corruption.
+  uint8_t src[600];
+  memset(src, 0, sizeof(src));  // all zeros: COBS's worst-case expansion
+  uint8_t enc[640];
+  size_t n = cobs_encode(enc, src, sizeof(src));
+  TEST_ASSERT_TRUE(n > sizeof(src));  // the body really is longer than the data
+
+  struct {
+    uint8_t buf[256];
+    uint8_t canary[8];
+  } guarded;
+  memset(guarded.canary, 0x5A, sizeof(guarded.canary));
+  TEST_ASSERT_EQUAL(0, cobs_decode(guarded.buf, enc, n, sizeof(guarded.buf)));
+  for (size_t i = 0; i < sizeof(guarded.canary); i++) {
+    TEST_ASSERT_EQUAL(0x5A, guarded.canary[i]);
+  }
+  // One byte more of room and the whole thing decodes.
+  uint8_t big[600];
+  TEST_ASSERT_EQUAL(sizeof(src), cobs_decode(big, enc, n, sizeof(big)));
+}
+
+void test_frame_reader_drops_a_body_longer_than_any_frame() {
+  // The reader buffers up to FRAME_MAX_WIRE bytes, which is more than
+  // FrameReader can hand on: a decoded frame is capped at
+  // FRAME_MAX_DECODED. Such a frame must be dropped, not decoded past the
+  // caller's buffer.
+  uint8_t dec[FRAME_MAX_DECODED + 8];
+  size_t dlen = frame_build(dec, nullptr, FRAME_MAX_DECODED - 1);  // 515 bytes
+  TEST_ASSERT_EQUAL(FRAME_MAX_DECODED + 1, dlen);
+  uint8_t wire[FRAME_MAX_WIRE];
+  size_t wl = frame_encode_wire(wire, dec, dlen);
+  TEST_ASSERT_TRUE(wl <= FRAME_MAX_WIRE);  // it does fit the wire buffer
+
+  struct {
+    uint8_t buf[FRAME_MAX_DECODED];
+    uint8_t canary[8];
+  } guarded;
+  memset(guarded.canary, 0x5A, sizeof(guarded.canary));
+  FrameReader r;
+  size_t res = 0;
+  for (size_t i = 0; i < wl; i++) res = r.feed(wire[i], guarded.buf);
+  TEST_ASSERT_EQUAL((size_t)-1, res);
+  for (size_t i = 0; i < sizeof(guarded.canary); i++) {
+    TEST_ASSERT_EQUAL(0x5A, guarded.canary[i]);
+  }
+  // ...and the reader recovers: the next good frame still decodes.
+  uint8_t good[16];
+  size_t glen = frame_build(good, nullptr, 0);
+  uint8_t gwire[FRAME_MAX_WIRE];
+  size_t gwl = frame_encode_wire(gwire, good, glen);
+  for (size_t i = 0; i < gwl; i++) res = r.feed(gwire[i], guarded.buf);
+  TEST_ASSERT_EQUAL(0, res);
 }
 
 void test_frame_roundtrip_and_crc() {
@@ -1698,6 +1755,8 @@ int main() {
   UNITY_BEGIN();
   RUN_TEST(test_cobs_roundtrip);
   RUN_TEST(test_cobs_empty);
+  RUN_TEST(test_cobs_decode_respects_the_destination_cap);
+  RUN_TEST(test_frame_reader_drops_a_body_longer_than_any_frame);
   RUN_TEST(test_frame_roundtrip_and_crc);
   RUN_TEST(test_frame_reader_stream);
   RUN_TEST(test_frame_reader_bad_crc_dropped);
