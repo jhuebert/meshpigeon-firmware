@@ -73,7 +73,8 @@ envelope   := serialized ClientToRadio or RadioToClient
   `noise_floor_dbm` — the last packet's RSSI − SNR, 0 = unknown); live
   connection state lives in `Status` (Wi-Fi link plus the per-transport
   `ble_clients` / `usb_cdc_clients` / `wifi_tcp_clients`). Do not put either
-  kind in the other message.- The PIN is **write-only on the wire** — `DeviceSettings` has no PIN field
+  kind in the other message.
+- The PIN is **write-only on the wire** — `DeviceSettings` has no PIN field
   and must never grow one. Writing an empty `pin` restores the factory
   default; absent leaves it alone.
 - Device settings: name, Wi-Fi (enabled/ssid/password/port, default 5000).
@@ -84,10 +85,12 @@ envelope   := serialized ClientToRadio or RadioToClient
 - Auth is per connection, the shipped default PIN is the public `"0000"`, three
   failures are free and then a 1 s penalty window applies (per *device*, not
   per connection, so parallel sockets do not multiply the guess rate). The
-  two async pushes that carry protected material — `DeviceSettings` (the
-  Wi-Fi passphrase) and the live `PacketEntry` — are filtered by the same
-  `is_authorized()` question, because a push that an unauthenticated socket
-  can read makes the gate on the request pointless.
+  three async pushes that carry protected material — `DeviceSettings` (the
+  Wi-Fi passphrase), the live `PacketEntry`, and the `RadioSettings` re-tune
+  — are filtered by the same `is_authorized()` question, because a push that
+  an unauthenticated socket can read makes the gate on the request
+  pointless. A push that is not the response to a gated request
+  (`TxResult`, `Status`) stays open.
 - Wi-Fi (ESP32 envs only): station + DHCP, multi-client TCP (≤ 4), mDNS
   `meshpigeon-XXXX.local`, retries 5 s → 2 min forever.
 
@@ -326,6 +329,24 @@ These are not hypotheticals; each one cost a debugging session.
   because `sd_ble_gap_addr_get()` simply fails. Hence `BleSink::begin()`
   takes no name and does not start advertising; `set_name()` is the one place
   a name is ever set, for the first advertisement and every rename alike.
+- **The board loop is the only task that may touch the core.** NimBLE-Arduino
+  runs the BLE host in its own FreeRTOS task at `configMAX_PRIORITIES-4`,
+  which *preempts* the Arduino `loop()` (priority 1), and the GATT write
+  callback runs there. The core is single-threaded by design — one
+  `response_` scratch, one sink registry — so a callback that calls
+  `on_envelope()` races the tick that is polling the radio: the loser is a
+  half-built envelope broadcast to every transport, or a registry walked
+  while it is being mutated. Every transport therefore does its inbound
+  work in `pump()` and its callbacks only copy bytes into a FIFO (or, on
+  nRF52, into `BLEUart`'s), and a callback that changes the *set* of
+  connections only flags it for the loop. There is no lock in the core, by
+  design — do not add one, move the work instead.
+- **An ack for a restart has to leave the building before the building
+  does.** `Reboot` / `FactoryReset` / `Bootloader` answer `Ok` and *then*
+  ask the board to reset, and on both BLE families a frame is queued rather
+  than handed to the link — so `reboot_now()` calls `BleSink::flush()` on
+  the way out. Bounded on purpose: a central that stopped reading must cost
+  that delay and nothing more.
 - **Never re-tune the radio while it is transmitting.** The tuning sequence
   calls `standby()`, which aborts the TX on the silicon: the transmission
   never completes, `tx_done()` never sees `kIrqTxDone` again, and the node

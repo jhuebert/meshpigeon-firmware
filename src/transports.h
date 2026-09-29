@@ -50,6 +50,54 @@ static const BLEUUID kNusWriteCharUUID("6E400002-B5A3-F393-E0A9-E50E24DCCA9E");
 static const BLEUUID kNusNotifyCharUUID("6E400003-B5A3-F393-E0A9-E50E24DCCA9E");
 
 /**
+ * A bounded byte FIFO between a transport's event context and the board
+ * loop: one producer (the BLE callback), one consumer (pump).
+ *
+ * This exists because a NimBLE callback is NOT the board loop.
+ * NimBLE-Arduino runs the BLE host in its own FreeRTOS task
+ * (`esp_nimble_enable` -> `nimble_host`, priority `configMAX_PRIORITIES-4`),
+ * and the GATT write handler runs there. The Arduino `loop()` task sits at
+ * priority 1, so the host task *preempts* it: a callback that reaches into
+ * the core races the tick that is polling the radio, and the core is
+ * single-threaded by design — one response scratch and one sink registry.
+ * The loser of that race is a half-built envelope encoded and broadcast to
+ * every transport, or a registry walked while it is being mutated.
+ *
+ * So the callback only copies bytes, and pump() decodes them: the core is
+ * touched from exactly one task, on every board. (The nRF52 twin needs none
+ * of this — BLEUart's own FIFO is already the producer side of the same
+ * shape, and its callback does nothing but set two flags.)
+ *
+ * `N` must be a power of two. Bytes that do not fit are dropped rather than
+ * overwriting what is queued: a hole in the stream costs at most the frame
+ * it lands in, and framing self-heals at the next delimiter (a CRC catches
+ * anything that still decodes).
+ */
+template <size_t N>
+class RxFifo {
+ public:
+  void write(const uint8_t* data, size_t len) {
+    for (size_t i = 0; i < len; i++) {
+      if (head_ - tail_ >= N) return;  // full: drop the rest of this write
+      buf_[(head_++) & (N - 1)] = data[i];
+    }
+  }
+  /** The two methods drain_frames() needs from a byte source. */
+  int available() const { return (int)(head_ - tail_); }
+  int read() { return head_ == tail_ ? -1 : (int)buf_[(tail_++) & (N - 1)]; }
+  void clear() { tail_ = head_; }
+
+ private:
+  // The standard single-producer/single-consumer ring: `head_` is written
+  // by the producer and read by the consumer, `tail_` the other way round,
+  // and neither is ever written by both. Volatile is what keeps each side
+  // from caching the other's index.
+  uint8_t buf_[N];
+  volatile size_t head_ = 0;
+  volatile size_t tail_ = 0;
+};
+
+/**
  * BLE transport (Nordic-UART-Service-compatible so generic tools work).
  * Supports multiple connected centrals (docs/radio-protocol.md §1).
  *
@@ -61,6 +109,10 @@ static const BLEUUID kNusNotifyCharUUID("6E400003-B5A3-F393-E0A9-E50E24DCCA9E");
  * strangers without a password (docs/radio-protocol.md §8.2). Outbound
  * frames still fan out to every central, so one push is one serialization
  * either way.
+ *
+ * The host task owns the callbacks; the board loop owns the core. Only
+ * pump() crosses that line, in both directions: it registers and releases
+ * the sinks, and it decodes the bytes the callbacks queued.
  */
 class BleSink : public NimBLEServerCallbacks,
                 public NimBLECharacteristicCallbacks {
@@ -69,6 +121,11 @@ class BleSink : public NimBLEServerCallbacks,
    *  four documented TCP clients it fills CommandProcessor's shared sink
    *  registry exactly, so the two limits can never disagree. */
   static const size_t kMaxCentrals = 3;
+  /** Inbound bytes buffered per central between a write callback and the
+   *  board loop. A BLE write is at most one MTU, and a central that writes
+   *  faster than the loop decodes is dropped to the framing's own recovery,
+   * which is the same trade the nRF52 port's 512-byte BLEUart makes. */
+  static const size_t kRxFifoBytes = 512;
 
   /**
    * Bring the BLE stack up and publish the NUS service.
@@ -96,12 +153,15 @@ class BleSink : public NimBLEServerCallbacks,
     server_->getAdvertising()->addServiceUUID(kNusServiceUUID);
   }
 
-  // NimBLEServerCallbacks (1.4.x signatures)
+  // NimBLEServerCallbacks (1.4.x signatures). Both run on the NimBLE host
+  // task, so neither may touch the core: they take or flag a connection and
+  // return. pump() does the rest.
   void onConnect(NimBLEServer* server, ble_gap_conn_desc* desc) override {
     if (claim(desc->conn_handle) == NULL) {
-      // No room: the sink registry is shared with every transport, and a
-      // connected central nothing will ever be sent to is worse than no
-      // connection at all. Turn it away rather than queue it.
+      // No room for a connection at all: a connected central nothing will
+      // ever be sent to is worse than no connection. Turn it away rather
+      // than queue it. (Whether the *shared sink registry* still has a slot
+      // is a board-loop question, so that half is answered in pump().)
       server->disconnect(desc->conn_handle);
     }
   }
@@ -110,27 +170,19 @@ class BleSink : public NimBLEServerCallbacks,
     // The state goes with the connection. Each Connection carries a
     // FrameReader and a frame buffer (~1 KB) plus the auth flag, so
     // releasing the slot releases all of it — a session that authenticated
-    // must not outlive the link it authenticated on.
+    // must not outlive the link it authenticated on. The slot stays claimed
+    // until the board loop has actually released it, so a reconnect that
+    // arrives first cannot be handed a slot that is still registered.
     Connection* c = find(desc->conn_handle);
-    if (c != NULL) {
-      if (proc_ != NULL) proc_->remove_sink(c);
-      c->in_use = false;
-    }
-    server->getAdvertising()->start();
+    if (c != NULL) c->pending_disconnect = true;
   }
 
   // NimBLECharacteristicCallbacks (1.4.x signature)
   void onWrite(NimBLECharacteristic* ch, ble_gap_conn_desc* desc) override {
-    (void)desc;
-    NimBLEAttValue v = ch->getValue();
     Connection* c = desc == NULL ? NULL : find(desc->conn_handle);
     if (c == NULL) return;  // a link we have already dropped
-    for (size_t i = 0; i < v.length(); i++) {
-      size_t res = c->reader.feed(v.data()[i], c->frame);
-      if (res != 0 && res != (size_t)-1) {
-        proc_->on_envelope(c->frame, res, c);
-      }
-    }
+    NimBLEAttValue v = ch->getValue();
+    c->rx.write(v.data(), v.length());  // pump() decodes it
   }
 
   /** Apply the effective device name and start advertising. Called once
@@ -145,8 +197,56 @@ class BleSink : public NimBLEServerCallbacks,
     server_->getAdvertising()->start();
   }
 
-  /** Board loop: RX is callback-driven and TX immediate — nothing to do. */
-  void pump() {}
+  /** Give the link a bounded chance to carry what is already queued, before
+   *  the board goes down. The core answers Reboot / FactoryReset /
+   *  Bootloader with `Ok` and *then* asks for the restart, so without this
+   *  the client that asked for the reboot never learns it was accepted
+   *  (docs/radio-protocol.md §3). NimBLE queues a notification and its own
+   *  host task transmits it, so this is a bounded wait, not a flush. */
+  void flush(uint32_t timeout_ms) { (void)timeout_ms; delay(timeout_ms); }
+
+  /**
+   * Board loop, and the ONLY place this transport touches the core:
+   * reconcile the connections the host task reported, then decode whatever
+   * bytes they queued. Order matters — a connection is registered before
+   * its bytes are dispatched, so a request can never be answered by a sink
+   * the registry does not know about, and a broadcast can never race the
+   * registration.
+   */
+  void pump() {
+    if (proc_ == NULL) return;
+    for (size_t i = 0; i < kMaxCentrals; i++) {
+      Connection& c = conns_[i];
+      if (c.pending_disconnect) {
+        c.pending_disconnect = false;
+        if (c.registered) {
+          proc_->remove_sink(&c);
+          c.registered = false;
+        }
+        c.rx.clear();
+        c.reader.reset();
+        c.in_use = false;  // last: the slot is now claimable again
+        if (server_ != NULL) server_->getAdvertising()->start();
+        continue;
+      }
+      if (!c.in_use) continue;
+      if (!c.registered) {
+        // The sink registry is shared with every transport and is the
+        // board loop's to take, so it is the thing that can still say no.
+        // A central nothing will ever be sent to is turned away, as at
+        // connect time.
+        if (!proc_->add_sink(&c)) {
+          server_->disconnect(c.handle);
+          c.pending_disconnect = true;
+          continue;
+        }
+        c.registered = true;
+      }
+      // Bounded per tick, like every other transport: a chatty central
+      // must not be able to own the loop (FRAME_MAX_DRAIN_BYTES_PER_PUMP).
+      drain_frames(*proc_, c.reader, c.frame, &c, c.rx);
+    }
+  }
 
   /** Connected centrals, for Status.ble_clients. */
   uint8_t ble_clients() {
@@ -175,9 +275,16 @@ class BleSink : public NimBLEServerCallbacks,
       }
     }
 
-    NimBLECharacteristic* notify_ = nullptr;  // the shared NUS TX char
+    NimBLECharacteristic* notify_ = NULL;  // the shared NUS TX char
     uint16_t handle = 0;
-    bool in_use = false;
+    // Who may write what, in a port with two tasks. The host task owns the
+    // identity fields and the two flags; the board loop owns `registered`
+    // (the sink registry), the reader, the frame buffer and the FIFO's
+    // tail. Nothing else crosses between them.
+    volatile bool in_use = false;
+    volatile bool registered = false;
+    volatile bool pending_disconnect = false;
+    RxFifo<kRxFifoBytes> rx;
     FrameReader reader;
     uint8_t frame[FRAME_MAX_DECODED];
   };
@@ -189,16 +296,19 @@ class BleSink : public NimBLEServerCallbacks,
     return NULL;
   }
 
-  /** Take the first free slot and register it as a sink. NULL when the sink
-   *  registry is full, which is the caller's cue to drop the central. */
+  /** Take the first free slot for a freshly connected central. NULL when
+   *  every slot is taken, which is the caller's cue to turn it away. The
+   *  sink registration happens in pump(), on the board loop. */
   Connection* claim(uint16_t handle) {
     for (size_t i = 0; i < kMaxCentrals; i++) {
       if (conns_[i].in_use) continue;
-      if (proc_ != NULL && !proc_->add_sink(&conns_[i])) return NULL;
       conns_[i].handle = handle;
       conns_[i].in_use = true;
+      conns_[i].registered = false;
+      conns_[i].pending_disconnect = false;
       conns_[i].authenticated = false;
       conns_[i].notify_ = tx_char_;
+      conns_[i].rx.clear();
       conns_[i].reader.reset();
       return &conns_[i];
     }
@@ -207,8 +317,8 @@ class BleSink : public NimBLEServerCallbacks,
 
   CommandProcessor* proc_ = NULL;
   NimBLEServer* server_ = NULL;
-  NimBLECharacteristic* tx_char_ = nullptr;
-  NimBLECharacteristic* rx_char_ = nullptr;
+  NimBLECharacteristic* tx_char_ = NULL;
+  NimBLECharacteristic* rx_char_ = NULL;
   // A fixed array, not a vector: the core's sink registry holds pointers
   // into it, and a reallocation would leave every registered connection
   // dangling. Slots are reused, so a connect/disconnect cycle costs no
@@ -296,6 +406,21 @@ class BleSink : public IFrameSink {
     Bluefruit.Advertising.start(0);
   }
 
+  /** Push what is queued for as long as the caller allows. The core answers
+   *  Reboot / FactoryReset / Bootloader with `Ok` and *then* asks for the
+   *  restart, and on this board that answer is still sitting in the TX
+   *  queue when the reset arrives — without this the client that asked for
+   *  the reboot never learns it was accepted (docs/radio-protocol.md §3).
+   *  Bounded: a central that has stopped reading costs the wait, not a hang. */
+  void flush(uint32_t timeout_ms) {
+    uint32_t waited = 0;
+    while (count_ > 0 && waited < timeout_ms) {
+      if (drain_step()) continue;
+      delay(1);
+      waited++;
+    }
+  }
+
   /** Connected centrals (0 or 1), for Status.ble_clients. */
   uint8_t ble_clients() { return connected() ? 1 : 0; }
 
@@ -373,7 +498,7 @@ class BleSink : public IFrameSink {
   volatile bool drop_pending_ = false;
 };
 
-BleSink* BleSink::self_ = nullptr;
+BleSink* BleSink::self_ = NULL;
 
 #endif  // MESHPIGEON_ESP32 / MESHPIGEON_NRF52
 
