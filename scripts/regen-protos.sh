@@ -36,7 +36,10 @@ else
 fi
 
 scratch=""
-cleanup() { [ -n "$scratch" ] && rm -rf "$scratch"; }
+# The `return 0` matters: a trap whose last command fails (an empty $scratch
+# makes the test false) overwrites the script's exit status, so a successful
+# regen would look like a failed one.
+cleanup() { [ -n "$scratch" ] && rm -rf "$scratch"; return 0; }
 trap cleanup EXIT
 if [ "$CHECK" = 1 ]; then
   scratch=$(mktemp -d)
