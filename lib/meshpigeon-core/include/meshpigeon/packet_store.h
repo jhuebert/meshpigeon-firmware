@@ -123,8 +123,7 @@ class PacketStore {
     for (uint32_t i = 0; i < count_ && delivered < max_count; i++) {
       Header h;
       read_header(off, &h);
-      uint32_t next = off + kStoredPacketOverhead + h.len;
-      if (next >= wrap_) next = 0;
+      uint32_t next = next_offset(off, h.len);
       if (h.seq > since_seq) {
         StoredPacket e;
         read_entry(off, h, &e);
@@ -149,6 +148,14 @@ class PacketStore {
   };
   static_assert(sizeof(Header) == kStoredPacketOverhead,
                 "on-ring header must be packed");
+
+  /** Where the record at `off` ends, wrapping to the front of the pool at
+   *  `wrap_`. Every walk over the ring steps with this: the wrap boundary
+   *  is the one thing a walk must not compute for itself. */
+  uint32_t next_offset(uint32_t off, uint8_t len) const {
+    uint32_t next = off + kStoredPacketOverhead + len;
+    return next >= wrap_ ? 0 : next;
+  }
 
   uint32_t free_bytes() const;
   void read_header(uint32_t off, Header* h) const;

@@ -15,7 +15,7 @@ PacketStore::PacketStore(uint32_t capacity_bytes)
     capacity_ = 0;
     wrap_ = 0;
   }
-  buf_ = capacity_ ? (uint8_t*)calloc(capacity_, 1) : nullptr;
+  buf_ = capacity_ ? (uint8_t*)calloc(capacity_, 1) : NULL;
   if (!buf_) {
     capacity_ = 0;  // allocation failed: store stays empty
     wrap_ = 0;
@@ -55,12 +55,9 @@ void PacketStore::read_entry(uint32_t off, const Header& h,
 void PacketStore::pop_oldest() {
   Header h;
   read_header(head_off_, &h);
-  uint32_t next = head_off_ + kRecordOverhead + h.len;
-  if (next >= wrap_) {
-    head_off_ = 0;
+  head_off_ = next_offset(head_off_, h.len);
+  if (head_off_ == 0) {
     wrap_ = capacity_;  // tail segment exhausted: linear again
-  } else {
-    head_off_ = next;
   }
   count_--;
   head_seq_++;
@@ -115,8 +112,7 @@ bool PacketStore::get(uint32_t seq, StoredPacket* out) const {
   for (uint32_t i = 0; i < seq - head_seq_; i++) {
     Header h;
     read_header(off, &h);
-    off += kRecordOverhead + h.len;
-    if (off >= wrap_) off = 0;
+    off = next_offset(off, h.len);
   }
   Header h;
   read_header(off, &h);
