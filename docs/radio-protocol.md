@@ -109,17 +109,19 @@ Async pushes (`id = 0`), broadcast to every connected client:
 |---|---|
 | `PacketEntry` | a packet was received on the air (live push, same shape as a fetch entry) — **only to authorized connections**, since `FetchPackets` is gated and the payload is identical |
 | `TxResult` | a `SendPacket` transmission finished |
-| `RadioSettings` | another client re-tuned the radio (sent to everyone *except* the issuer) |
+| `RadioSettings` | another client re-tuned the radio (everyone except the issuer — **and only authorized connections**, since `GetRadioSettings` is gated) |
 | `DeviceSettings` | another client changed device settings (everyone except the issuer — **and only connections that are authorized to see it**, since the read model carries the Wi-Fi passphrase) |
 | `Status` | the Wi-Fi state changed (§9) |
 
-The two gated pushes are gated because an unauthenticated socket is exactly
-as able to *listen* as it is to ask. A push is not an operation, so nothing
-would stop it from carrying the same material the request path refuses —
-and an async frame carrying the Wi-Fi passphrase, or the raw bytes of every
-packet the node hears, would make the gate on the request meaningless. Both
-still reach every connection while the device holds the shipped default PIN,
-which is the open, unconfigured case (§8.2).
+The three gated pushes are gated for the same reason: an unauthenticated
+socket is exactly as able to *listen* as it is to ask. A push is not an
+operation, so nothing would stop it from carrying the same material the
+request path refuses — and an async frame carrying the Wi-Fi passphrase, the
+raw bytes of every packet the node hears, or the node's own tuning would
+make the gate on the request meaningless. Each is filtered by the *same*
+`is_authorized()` question its request path uses, so the two cannot drift
+apart. All three still reach every connection while the device holds the
+shipped default PIN, which is the open, unconfigured case (§8.2).
 
 ## 4. Errors
 
@@ -131,7 +133,7 @@ human-readable hint, explicitly not a contract.
 | `ERROR_CODE_BAD_COMMAND` | unknown operation (radio predates the oneof variant, or a bug) |
 | `ERROR_CODE_BAD_PAYLOAD` | wrong size/format/validation — rejected atomically, nothing applied |
 | `ERROR_CODE_BUSY` | TX in flight (a `SendPacket` or a re-tune), the first-owner lock is active (§6), or the packet store could not take the packet (§10) |
-| `ERROR_CODE_TX_FAILED` | the radio refused the tuning or the transmission |
+| `ERROR_CODE_TX_FAILED` | the radio refused a tuning (`SetRadioSettings`); a refused *transmission* is not an error at all — the send is accepted and reports `TxResult(success=false)` |
 | `ERROR_CODE_NO_RADIO` | the radio failed to come up, or would not accept the persisted tuning at boot — there is no air to use |
 | `ERROR_CODE_NOT_SUPPORTED` | feature absent on this board (capability-gated, §8) |
 | `ERROR_CODE_AUTH_REQUIRED` | a PIN is set and this connection has not authenticated (§8) |
@@ -192,9 +194,11 @@ tunes what it is told.
   never completes and never reports — leaving the node unable to transmit
   anything at all until it was power-cycled.
 - The firmware **ignores the request's `config_epoch`** and bumps its own by 1
-  on every accepted change; all connected clients except the issuer get the
-  async `RadioSettings` push, then the issuer gets the post-bump settings as
-  its response.
+  on every accepted change; all *authorized* connected clients except the
+  issuer get the async `RadioSettings` push, then the issuer gets the
+  post-bump settings as its response. The push is filtered like every other
+  gated material (§3) — `GetRadioSettings` is auth-gated, so a client that
+  may not ask for the tuning has no business being told it.
 - Out-of-range values (zero frequency/bandwidth, a bandwidth that is not a
   whole 10 Hz step, SF or CR out of range, TX power above **22 dBm**) are
   rejected with `ERROR_CODE_BAD_PAYLOAD`; a radio that refuses the applied
@@ -309,7 +313,7 @@ have a shared pairing concept.
   actually protects it. A custom PIN is 4–8 ASCII digits.
 - **Exempt operations** (reachable without authenticating): `ping`,
   `get_device_info`, `get_status`, `auth`, `bootloader`. Everything else
-  answers `ERROR_CODE_AUTH_REQUIRED`. The two async pushes that carry
+  answers `ERROR_CODE_AUTH_REQUIRED`. The three async pushes that carry
   protected material (§3) are filtered by the same rule.
 - **Per-connection state.** Authenticating on BLE says nothing about the TCP
   socket someone else opened, and a second BLE central says nothing about the
@@ -377,8 +381,10 @@ packet larger than the whole pool is dropped and counted in `dropped`.
   `SetRadioSettings` (§6); the app's outbox owns retry policy. A radio that is
   not usable (`radio_ok` false) answers `ERROR_CODE_NO_RADIO` and stores
   nothing — the packet is never accepted, so a `TxResult` can never claim a
-  transmission that did not happen. The `TxResult` push follows the response
-  and reports the outcome later.
+  transmission that did not happen. Every other send is accepted first and
+  then reported: the `TxResult` push follows the response, carrying
+  `success = false` if the radio refused the keying up outright and `true`
+  once it finishes.
 - Packets received on the air are stored with origin `RECEIVED` and pushed
   live to every **authorized** connected client (§3). A packet too large for
   the whole pool is dropped and counted, and gets no live push: the app would
@@ -422,8 +428,13 @@ The persistence inventory is **closed** — three things, ever:
 |---|---|---|
 | radio settings | NVS `meshpigeon/radio` | `/radio.bin` |
 | boot count | NVS `meshpigeon/boots` | `/boots.bin` |
-| device settings (name, PIN, Wi-Fi) | NVS keys `name`, `pin`, `wifie`, `wifissid`, `wifipass`, `wifiport` | `/dev.bin` |
+| device settings (name, PIN, Wi-Fi) | NVS keys `name`, `pin`, `wifie`, `wifissid`, `wifipass`, `wifiport`, plus the commit marker `dev` (written **last**; its absence means "never written") | `/dev.bin` (one fixed-layout record: version byte + CRC16) |
 
+The commit markers are what make a write power-loss tolerant, as the
+`SettingsStore` contract requires: NVS commits each key separately, so a cut
+between two of them would otherwise leave a partial record that reads as a
+complete one — and the field that goes missing is the Wi-Fi configuration,
+which is exactly what strands a pigeon that came back after the power went.
 Nothing else is ever written: **no packet bytes, no timestamps, no counters.**
 Power loss or reboot clears the packet history — that is a hardware property,
 not a policy.

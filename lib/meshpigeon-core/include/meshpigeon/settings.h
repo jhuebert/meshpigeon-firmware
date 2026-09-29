@@ -14,8 +14,9 @@ namespace meshpigeon {
  * only thing it persists. Applied at boot so a lone radio resumes
  * listening with no app attached (docs/radio-protocol.md §6).
  *
- * Serialized layout (little-endian, 17 bytes + 2-byte CRC16 over the 15
- * leading bytes... see serialize()):
+ * Serialized layout (little-endian, kSerializedSize = 17 bytes: 15 bytes of
+ * fields followed by a 2-byte CRC-16/CCITT-FALSE over them, little-endian —
+ * see serialize()):
  *   [version:1][region:1][freq_hz:u32][bw_x100khz:u16][sf:1][cr:1]
  *   [power_dbm:1][config_epoch:u32][crc16:2]
  */
@@ -141,9 +142,13 @@ struct DeviceSettings {
 /**
  * Persistence abstraction: NVS on ESP32, LittleFS/flash file on nRF52,
  * plain file in host tests/simulator. Implementations must be power-loss
- * tolerant (write-then-commit); apply at boot happens through load().
- * Absent records fall back to defaults on read, so firmware upgraded onto
- * an older install boots cleanly.
+ * tolerant: a write interrupted half way must read back as "never written"
+ * rather than as a partial record, because the field a partial record is
+ * most likely to be missing (the Wi-Fi configuration) is the one that
+ * strands a device. On a key-per-field backend that means a commit marker
+ * written last (see src/main.cpp); on a single-record backend, a CRC over
+ * the record. Absent records fall back to defaults on read, so firmware
+ * upgraded onto an older install boots cleanly.
  */
 class SettingsStore {
  public:
