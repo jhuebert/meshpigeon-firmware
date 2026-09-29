@@ -58,6 +58,9 @@ static const uint32_t kStoreBytes = 65536;
 class BoardSettingsStore;
 static BoardSettingsStore* g_settings_store = NULL;
 static BleSink* g_ble = NULL;
+// How long reboot_now() lets the transports push what they have queued
+// before the board actually restarts.
+static const uint32_t kRebootFlushMs = 100;
 #if defined(MESHPIGEON_HAS_WIFI)
 static WifiTransport* g_wifi = NULL;
 #endif
@@ -65,6 +68,14 @@ static WifiTransport* g_wifi = NULL;
 // Reboot, bootloader and factory reset all end the same way; the difference
 // is what was persisted before we got here.
 static void reboot_now() {
+  // The `Ok` that answers Reboot / FactoryReset / Bootloader is still in
+  // flight when we get here — the core sends it and *then* asks for the
+  // restart (docs/radio-protocol.md §3), and on BLE a frame is queued rather
+  // than handed to the link. Give the transports a bounded chance to push
+  // it, or the client that asked for the reboot never learns it was
+  // accepted. Bounded, because a central that has stopped reading must cost
+  // this delay and nothing more: the reset is coming either way.
+  if (g_ble) g_ble->flush(kRebootFlushMs);
   delay(10);
 #if defined(ARDUINO_ARCH_ESP32)
   ESP.restart();
@@ -235,11 +246,18 @@ class BoardSettingsStore : public SettingsStore {
     nvs_.putString("wifissid", s.wifi_ssid);
     nvs_.putString("wifipass", s.wifi_password);
     nvs_.putUShort("wifiport", s.wifi_port);
+    // The commit marker, written LAST and never in the middle. NVS commits
+    // each key separately, so a power cut between two of them leaves a
+    // partial record — and a partial record is indistinguishable from a
+    // complete one unless something says "I finished". The field that goes
+    // missing is the Wi-Fi configuration, which is exactly what strands a
+    // pigeon that came back after the power went (docs/radio-protocol.md §11).
+    nvs_.putUChar("dev", kDeviceVersion);
     return true;
   }
   bool load_device(DeviceSettings* out) override {
     out->clear();
-    if (!nvs_.isKey("pin")) return false;  // never written: defaults
+    if (nvs_.getUChar("dev", 0) != kDeviceVersion) return false;  // never written
     strncpy(out->name, nvs_.getString("name", "").c_str(),
             MESHPIGEON_NAME_MAX);
     out->name[MESHPIGEON_NAME_MAX] = 0;
@@ -262,9 +280,14 @@ class BoardSettingsStore : public SettingsStore {
     nvs_.remove("wifissid");
     nvs_.remove("wifipass");
     nvs_.remove("wifiport");
+    nvs_.remove("dev");
   }
 
  private:
+  // Bumped when the key set below changes shape, so a record written by an
+  // older firmware reads as "never written" instead of as garbage.
+  static const uint8_t kDeviceVersion = 1;
+
   Preferences nvs_;
 };
 
