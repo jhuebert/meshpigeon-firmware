@@ -44,8 +44,8 @@ Run the host-side unit tests (no hardware needed — the entire board-neutral
 core is compiled and tested on the desktop):
 
 ```sh
-pio test -e native         # 63 tests: framing, store, settings, envelopes,
-                           # device settings, auth, status, uptime
+pio test -e native         # host unit tests: framing, store, settings,
+                           # envelopes, device settings, auth, status, uptime
 ```
 
 Run the **desktop radio simulator** — a TCP stand-in for a real board that

@@ -26,7 +26,9 @@
 #define MESHPIGEON_MAX_RAW_PACKET 255
 // Biggest serialized envelope we accept in a frame. Sized so a worst-case
 // PacketEntry (255 raw bytes + metadata) plus envelope overhead fits with
-// headroom (docs/radio-protocol.md §2). The generated *_size macros top out at 512.
+// headroom (docs/radio-protocol.md §2). The largest message nanopb reports
+// is well under it (PacketEntry is 299 bytes); 512 is the cap the whole
+// stack agrees on, not a measured worst case.
 #define MESHPIGEON_MAX_FRAME_PAYLOAD 512
 // Device-settings limits (mirrored by the nanopb .options caps).
 #define MESHPIGEON_NAME_MAX 20

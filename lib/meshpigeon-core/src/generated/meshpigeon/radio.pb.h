@@ -29,8 +29,8 @@ typedef struct _meshpigeon_GetRadioSettings {
 
 /* The LoRa radio tuning: frequency, bandwidth, spreading factor, coding rate
  and TX power. A response to GetRadioSettings or SetRadioSettings
- (post-bump), and the payload of the async RadioSettingsChanged push (same
- message, id = 0). */
+ (post-bump), and the payload of the async "another client re-tuned" push
+ (this same message, id = 0). */
 typedef struct _meshpigeon_RadioSettings {
     /* Center frequency in Hz. */
     uint32_t freq_hz;
@@ -49,9 +49,9 @@ typedef struct _meshpigeon_RadioSettings {
 
 /* Applies new radio settings atomically: validated, persisted immediately,
  applied at once, and every OTHER connected client receives an async
- RadioSettingsChanged. During the first 5 minutes after boot only the FIRST
- accepted change is honored; later ones return ERROR_CODE_BUSY
- (the first-owner lock, docs/radio-protocol.md §7.1). */
+ RadioSettings (this message, id = 0). During the first 5 minutes after
+ boot only the FIRST accepted change is honored; later ones return
+ ERROR_CODE_BUSY (the first-owner lock, docs/radio-protocol.md §6.1). */
 typedef struct _meshpigeon_SetRadioSettings {
     bool has_settings;
     meshpigeon_RadioSettings settings;
@@ -125,7 +125,9 @@ typedef struct _meshpigeon_TxResult {
 } meshpigeon_TxResult;
 
 /* Wipes the packet store (the RAM ring). Settings are untouched; FactoryReset
- is the one that clears both. Sequence numbers restart. */
+ is the one that clears both. Sequence numbers do NOT restart: they are
+ monotonic for the life of the boot, so a cursor stays valid. Clients
+ re-baseline from StoreInfo.oldest_seq. */
 typedef struct _meshpigeon_PurgeStore {
     char dummy_field;
 } meshpigeon_PurgeStore;

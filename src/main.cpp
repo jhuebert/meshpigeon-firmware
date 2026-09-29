@@ -389,7 +389,7 @@ class BoardSettingsStore : public SettingsStore {
 static PacketStore* g_store;
 static BoardHooks g_hooks;
 #if defined(MESHPIGEON_HAS_WIFI)
-// The mDNS name shares the derived device-name suffix (docs/radio-protocol.md §7).
+// The mDNS name shares the derived device-name suffix (docs/radio-protocol.md §8.3).
 static void wifi_hostname(char out[24]) {
   char suffix[5];
   g_hooks.mac_suffix(suffix);

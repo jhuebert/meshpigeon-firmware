@@ -100,8 +100,8 @@ message RadioToClient {
     // GET_DEVICE_INFO response.
     DeviceInfo device_info = 3;
 
-    // GET/SET_RADIO_SETTINGS response; async RadioSettingsChanged push
-    // (another client re-tuned) uses the same message, id = 0.
+    // GET/SET_RADIO_SETTINGS response. The async "another client re-tuned"
+    // push is this same message with id = 0.
     RadioSettings radio_settings = 4;
 
     // SEND_PACKET response (async TxResult follows).
@@ -117,12 +117,12 @@ message RadioToClient {
     // Async SEND_PACKET outcome (id = 0).
     TxResult tx_result = 8;
 
-    // GET/SET_DEVICE_SETTINGS response; async DeviceSettingsChanged push
-    // (another client changed settings) uses the same message, id = 0.
+    // GET/SET_DEVICE_SETTINGS response. The async "another client changed
+    // settings" push is this same message with id = 0.
     DeviceSettings device_settings = 9;
 
-    // GET_STATUS response; async DeviceStatusChanged push (Wi-Fi state
-    // transition) uses the same message, id = 0.
+    // GET_STATUS response. The async Wi-Fi state-transition push is this
+    // same message with id = 0.
     Status status = 10;
 
     // Ack for AUTH, REBOOT, FACTORY_RESET, PURGE_STORE. For REBOOT and

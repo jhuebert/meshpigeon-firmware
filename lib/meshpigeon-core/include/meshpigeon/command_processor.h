@@ -64,7 +64,7 @@ class IBoardHooks {
   virtual void factory_reset() {}
   /** The two low MAC bytes every derived identifier shares ("A3F2"). */
   virtual void mac_suffix(char out[5]) { out[0] = 0; }
-  /** BLE advertising name change: rename and restart advertising (§9). */
+  /** BLE advertising name change: rename and restart advertising (§8.3). */
   virtual void set_device_name(const char* name) { (void)name; }
   /** Connected BLE centrals, for Status.ble_clients. */
   virtual uint8_t ble_clients() { return 0; }
@@ -149,7 +149,7 @@ class CommandProcessor {
   /** Board loop: transmit finished. Broadcasts the result for a send seq. */
   void on_tx_result(uint32_t seq, bool ok);
 
-  /** The board's link changed the Wi-Fi state: broadcast Status (§11). */
+  /** The board's link changed the Wi-Fi state: broadcast Status (§9). */
   void on_wifi_state_changed();
 
   const RadioSettings& settings() const { return settings_; }
@@ -223,7 +223,7 @@ class CommandProcessor {
   int32_t noise_floor_dbm_ = 0;
 
   // AUTH rate limit: 3 failures are free, then a 1 s penalty window per
-  // further attempt, during which attempts are rejected unevaluated (§8).
+  // further attempt, during which attempts are rejected unevaluated (§8.2).
   uint8_t auth_fails_ = 0;
   uint64_t auth_backoff_until_ = 0;
 
@@ -235,7 +235,7 @@ class CommandProcessor {
   RadioToClientMessage response_;
 
   // One sink per connection, shared by every transport (docs/radio-protocol.md
-  // §3). Sized so an ESP32 board can hold USB + BLE + the documented four
+  // §7). Sized so an ESP32 board can hold USB + BLE + the documented four
   // TCP clients at once; the nRF52 boards only ever use two of them.
   static const size_t kMaxSinks = 6;
   IFrameSink* sinks_[kMaxSinks];

@@ -87,8 +87,8 @@ bool CommandProcessor::boot() {
 }
 
 bool CommandProcessor::first_owner_lock_active() const {
-  // docs/radio-protocol.md §6.1: during the grace window after boot, only the first SET_RADIO is
-  // honored — the first-connected client owns the tuning decision.
+  // docs/radio-protocol.md §6.1: in the grace window after boot only the first
+  // SET_RADIO is honored — the first-connected client owns the tuning decision.
   return set_count_since_boot_ >= 1 && clock_.uptime_ms64() < kFirstOwnerGraceMs;
 }
 
@@ -139,7 +139,7 @@ void CommandProcessor::broadcast_response(IFrameSink* except,
     // `authorized_only` is for the one push that carries a credential: a
     // broadcast is not an operation, so without it a stranger who merely
     // attached a socket would collect the Wi-Fi passphrase from every
-    // rename (docs/radio-protocol.md §8.1).
+    // rename (docs/radio-protocol.md §8.3).
     if (authorized_only && !is_authorized(sinks_[i])) continue;
     sinks_[i]->send_frame(buf, len);
   }
@@ -173,7 +173,7 @@ void CommandProcessor::build_device_settings() {
   m.wifi_password[sizeof(m.wifi_password) - 1] = 0;
   m.wifi_port = device_.wifi_port;
   // The PIN is write-only on the wire: no field of DeviceSettingsMessage
-  // carries it, and none ever will (docs/radio-protocol.md §2).
+  // carries it, and none ever will (docs/radio-protocol.md §8).
 }
 
 void CommandProcessor::build_status() {
@@ -259,7 +259,7 @@ void CommandProcessor::send_device_info(uint32_t id, IFrameSink* from) {
   m.battery_mv = hooks_ ? hooks_->battery_mv() : 0xFFFF;
   m.radio_ok = radio_ok_;
   m.noise_floor_dbm = noise_floor_dbm_;
-  // §8: an unauthenticated client sees the lock before it hits it.
+  // §8.2: an unauthenticated client sees the lock before it hits it.
   m.auth_required = !is_authorized(from);
   deliver(from);
 }
@@ -488,7 +488,7 @@ void CommandProcessor::handle_request(const ClientToRadioMessage& req,
     }
 
     case kOpBootloader: {
-      // Always allowed: DFU must be reachable on a locked device (§8).
+      // Always allowed: DFU must be reachable on a locked device (§8.2).
       send_ok(req.id, from);
       if (hooks_) hooks_->reboot_to_bootloader();
       return;
@@ -562,8 +562,8 @@ void CommandProcessor::handle_request(const ClientToRadioMessage& req,
       }
       if (m.has_wifi_port) next.wifi_port = (uint16_t)m.wifi_port;
       device_ = next;
-      settings_store_.save_device(device_);  // persists immediately (docs/radio-protocol.md §6)
-      if (m.has_name && hooks_) {            // rename + re-advertise (§9)
+      settings_store_.save_device(device_);  // persists immediately (docs §8.1)
+      if (m.has_name && hooks_) {            // rename + re-advertise (§8.3)
         char effective[MESHPIGEON_NAME_MAX + 1];
         effective_name(effective);
         hooks_->set_device_name(effective);
@@ -587,7 +587,7 @@ void CommandProcessor::handle_request(const ClientToRadioMessage& req,
     }
 
     case kOpAuth: {
-      if (auth_backoff_active()) {  // slow brute force, not even evaluated (§8)
+      if (auth_backoff_active()) {  // slow brute force, not even evaluated (§8.2)
         send_error(req.id, meshpigeon_Error_ErrorCode_ERROR_CODE_AUTH_REQUIRED,
                    from);
         return;

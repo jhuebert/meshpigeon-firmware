@@ -61,7 +61,8 @@ typedef struct _meshpigeon_StoreInfo {
     uint32_t oldest_seq;
 } meshpigeon_StoreInfo;
 
-/* The response to GetDeviceInfo. Field-for-field the plan-13 §4 info blob. */
+/* The response to GetDeviceInfo: identity, versions, capabilities, store
+ statistics and health (docs/radio-protocol.md §5). */
 typedef struct _meshpigeon_DeviceInfo {
     /* Version of this specification the firmware was built against. Additive
  proto changes do NOT bump it; whole-spec breaks do. Clients must refuse
@@ -99,10 +100,12 @@ typedef struct _meshpigeon_DeviceInfo {
     uint32_t battery_mv;
     /* False = radio init failed; the device still answers (report the fault). */
     bool radio_ok;
-    /* True = this client has not authenticated on this connection (it always
- starts true; the public default PIN "0000" satisfies Auth out of the
- box). Every operation except ping/get_device_info/auth/bootloader
- returns ERROR_CODE_AUTH_REQUIRED until Auth succeeds. */
+    /* True = this client may not use the node yet. False while the device
+ still holds the public default PIN "0000" (which is what ships, so a
+ client can always read this field to find that out), and false on a
+ connection that has authenticated since. Every operation except
+ ping / get_device_info / get_status / auth / bootloader answers
+ ERROR_CODE_AUTH_REQUIRED while this is true. */
     bool auth_required;
     /* Estimated receiver noise floor in dBm, from the most recent packet the
  radio heard (RSSI - SNR); 0 = unknown, i.e. nothing received since
@@ -122,7 +125,7 @@ typedef struct _meshpigeon_GetDeviceSettings {
 
 /* The device settings, as stored (the read model). A response to
  GetDeviceSettings or SetDeviceSettings, and the payload of the async
- DeviceSettingsChanged push. */
+ "another client changed settings" push (this same message, id = 0). */
 typedef struct _meshpigeon_DeviceSettings {
     /* Effective device/advertised name. Empty stored name is reported as the
  derived default ("MeshPigeon-XXXX" from the MAC), so this is never empty

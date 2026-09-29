@@ -19,7 +19,8 @@ typedef enum _meshpigeon_Error_ErrorCode {
     /* Wrong size/format/validation; the request was rejected atomically —
  nothing was applied. */
     meshpigeon_Error_ErrorCode_ERROR_CODE_BAD_PAYLOAD = 2,
-    /* TX in flight, first-owner lock active, or another busy condition. */
+    /* TX in flight, the first-owner lock is active, or the packet store
+ could not take the packet. */
     meshpigeon_Error_ErrorCode_ERROR_CODE_BUSY = 3,
     /* The radio refused or failed the transmission. */
     meshpigeon_Error_ErrorCode_ERROR_CODE_TX_FAILED = 4,
@@ -41,7 +42,9 @@ typedef struct _meshpigeon_Ok {
  set is intentionally the plan-13 status table. */
 typedef struct _meshpigeon_Error {
     meshpigeon_Error_ErrorCode code;
-    /* Short human-readable hint for logs/UI. Not stable for parsing. */
+    /* Short human-readable hint for logs/UI. Not stable for parsing. The
+ firmware leaves it empty today (the code is the contract); a client must
+ never parse it. */
     char message[65];
 } meshpigeon_Error;
 
@@ -100,8 +103,8 @@ typedef struct _meshpigeon_RadioToClient {
         meshpigeon_Pong pong;
         /* GET_DEVICE_INFO response. */
         meshpigeon_DeviceInfo device_info;
-        /* GET/SET_RADIO_SETTINGS response; async RadioSettingsChanged push
-     (another client re-tuned) uses the same message, id = 0. */
+        /* GET/SET_RADIO_SETTINGS response. The async "another client re-tuned"
+     push is this same message with id = 0. */
         meshpigeon_RadioSettings radio_settings;
         /* SEND_PACKET response (async TxResult follows). */
         meshpigeon_PacketAccepted packet_accepted;
@@ -112,11 +115,11 @@ typedef struct _meshpigeon_RadioToClient {
         meshpigeon_FetchEnd fetch_end;
         /* Async SEND_PACKET outcome (id = 0). */
         meshpigeon_TxResult tx_result;
-        /* GET/SET_DEVICE_SETTINGS response; async DeviceSettingsChanged push
-     (another client changed settings) uses the same message, id = 0. */
+        /* GET/SET_DEVICE_SETTINGS response. The async "another client changed
+     settings" push is this same message with id = 0. */
         meshpigeon_DeviceSettings device_settings;
-        /* GET_STATUS response; async DeviceStatusChanged push (Wi-Fi state
-     transition) uses the same message, id = 0. */
+        /* GET_STATUS response. The async Wi-Fi state-transition push is this
+     same message with id = 0. */
         meshpigeon_Status status;
         /* Ack for AUTH, REBOOT, FACTORY_RESET, PURGE_STORE. For REBOOT and
      FACTORY_RESET the device reboots shortly after sending this. */

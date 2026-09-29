@@ -135,7 +135,8 @@ src/transports.h             USB CDC + BLE (Nordic UART Service) frame sinks
 src/wifi_transport.{h,cpp}   Wi-Fi station + multi-client TCP + mDNS (ESP32 only)
 src/sim_main.cpp             desktop radio simulator (TCP, scriptable RF loss/dup)
 include/meshpigeon/sim_radio.h  SimRadio : ILoRaRadio for the simulator
-test/test_core.cpp           host unit tests (Unity), the whole coreboards/, variants/           custom board definitions + linker scripts
+test/test_core.cpp           host unit tests (Unity), the whole core
+boards/, variants/           custom board definitions + linker scripts
 scripts/                     regen-protos.sh, bench.sh, mesh-sim.sh
 docs/                        supplemental documentation only
   radio-protocol.md          the versioned interface contract
@@ -150,7 +151,7 @@ the board's persistence.
 ## 4. Build, test, verify
 
 ```sh
-pio test -e native        # 63 host tests — the whole core, no hardware
+pio test -e native        # the host tests — the whole core, no hardware
 pio run                   # all four board targets must build
 pio run -e sim            # desktop simulator (.pio/build/sim/program)
 scripts/mesh-sim.sh 3     # N simulated radios on ports 8801..8803
@@ -220,17 +221,34 @@ These are not hypotheticals; each one cost a debugging session.
   undetectable. `CommandProcessor::poll()` polls the clock, and board loops
   poll it too.
 - **nanopb `SetRadioSettings.settings` is an optional submessage**: setting the
-  field without `has_settings` encodes an empty message. Same for every
-  `optional` field in `SetDeviceSettings` — set the `has_*` flag.
+  field without `has_settings` encodes an empty message — and *omitting* it
+  decodes as an empty one too, indistinguishable from "all defaults" unless
+  the handler checks `has_settings` itself. Same for every `optional` field
+  in `SetDeviceSettings` — set the `has_*` flag.
 - **A nanopb string `max_size` counts the NUL.** `max_size: 20` is a
   19-character field, so a cap that matches the documented limit by eye
   truncates every value *at* the limit. Caps are limit + 1;
   `test_max_length_strings_survive_the_wire` round-trips each one through real
-  encode/decode, so a future edit fails there, not on a device.
+  encode/decode, so a future edit fails there, not on a device. The corollary:
+  because the cap *is* the documented limit, a value over it fails to decode
+  and is dropped silently (§2) — it never reaches the firmware as a bad field
+  the validation could answer with `BAD_PAYLOAD`.
+- **COBS is not length-preserving, and the wire buffer is the bigger one.**
+  `FrameReader` buffers up to `FRAME_MAX_WIRE` (518) bytes but hands out
+  `FRAME_MAX_DECODED` (514), and a COBS body expands by up to 3 bytes over
+  the decoded form — so an unbounded `cobs_decode` writes straight past every
+  transport's frame buffer (on the nRF52 sink, into the TX queue's `head_`/
+  `count_`). That is why `cobs_decode` takes a `dst_cap`. Any new framing
+  primitive that writes into a caller-provided buffer takes a cap too.
 - **A hook that fills an array must honour `max`.** `fill_capabilities()` is
   handed `kMaxCapabilities`; a value that does not fit is neither written nor
   counted. Ignoring `max` while still returning the count is how a board ends
   up advertising `CAPABILITY_UNSPECIFIED` for every capability it has.
+- **`response_.body` is a union.** Every `build_*()` starts by zeroing the
+  body it is about to fill, and every response starts with `begin_response(id)`
+  — so a builder never depends on all sixteen call sites having reset the
+  envelope first, and a board hook that fills only the Status fields it knows
+  leaves the rest reading as "unknown".
 - **`regen-protos.sh` needs an absolute, pre-created output directory.** The
   PyInstaller-packed generator mishandles relative `../` paths. The script
   resolves `OUT` with `$(pwd)` and `mkdir -p`s it; do not "simplify" that back.

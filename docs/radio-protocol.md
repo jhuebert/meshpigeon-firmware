@@ -65,6 +65,8 @@ operation and the error code all live *inside* the envelope:
 - `ClientToRadio.id` — a client-chosen non-zero correlation id. Every response
   echoes it. An envelope that decodes but carries id 0 (or fails to decode at
   all) is dropped without a reply: there is no id to correlate an error to.
+  "Fails to decode" includes any string or bytes field over its `*.options`
+  cap (§8.1): the caps are the enforcement point, not a soft limit.
 - Async pushes use `id = 0`.
 
 ## 3. Operations
@@ -121,7 +123,8 @@ human-readable hint, explicitly not a contract.
 |---|---|
 | `spec_version` | 2 |
 | `fw_version`, `board_name` | strings ("XIAO WIO", "HELTEC V3", "T114", "T1000-E", "SIM") |
-| `capabilities` | repeated enum: `WIFI_STA`, `BATTERY`, `BLE`, `USB_CDC` — compile-time facts, never probed || `uptime_ms` | monotonic 64-bit uptime (§5.1) |
+| `capabilities` | repeated enum: `WIFI_STA`, `BATTERY`, `BLE`, `USB_CDC` — compile-time facts, never probed |
+| `uptime_ms` | monotonic 64-bit uptime (§5.1) |
 | `boot_count` | real boots, persisted; informational only |
 | `store` | `count`, `capacity_bytes`, `dropped`, `oldest_seq` |
 | `radio_config_epoch` | bumped on every accepted `SetRadioSettings` |
@@ -235,7 +238,10 @@ it set.
   to restore the factory default (absent = unchanged); SSID ≤ 32; password
   ≤ 63 (the WPA2/3 limit); port ≠ 0. Every limit is the exact cap in the
   `*.options` files, NUL terminator included — a value at the limit
-  round-trips unchanged.
+  round-trips unchanged. Because the cap *is* the limit, a value over it
+  never arrives as a bad field: the envelope fails to decode and is dropped
+  silently per §2, so there is no request to answer. The firmware's own
+  checks are the backstop for whatever does decode.
 - **Capability-gated.** Any Wi-Fi field on a board without the `WIFI_STA`
   capability → `ERROR_CODE_NOT_SUPPORTED`, nothing applied. The app hides
   those fields using `DeviceInfo.capabilities`; the firmware rejects as a
