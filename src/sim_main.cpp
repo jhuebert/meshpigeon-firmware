@@ -13,6 +13,7 @@
 #ifdef MESHPIGEON_NATIVE
 
 #include <arpa/inet.h>
+#include <errno.h>
 #include <netinet/in.h>
 #include <signal.h>
 #include <stdio.h>
@@ -108,7 +109,14 @@ class Client : public IFrameSink {
     uint8_t buf[1024];
     ssize_t n = recv(fd_, buf, sizeof(buf), MSG_DONTWAIT);
     if (n == 0) return false;  // closed
-    if (n < 0) return true;    // no data right now
+    if (n < 0) {
+      // "nothing right now" is only EWOULDBLOCK/EAGAIN (and EINTR, where the
+      // syscall should simply be retried). Anything else is a dead socket,
+      // and treating it as an empty read would keep the client — and its fd —
+      // in the sim forever, silently spinning in select() on a peer that is
+      // already gone.
+      return (errno == EAGAIN || errno == EWOULDBLOCK || errno == EINTR);
+    }
     // Drained through the same bounded helper the boards use, so the sim
     // cannot drift into a differently-budgeted loop.
     BufferStream bytes(buf, (size_t)n);
