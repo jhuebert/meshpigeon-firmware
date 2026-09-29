@@ -142,14 +142,13 @@ struct DeviceSettings {
   }
   /** Apply a validated SetDeviceSettings `pin` value. */
   static void set_pin(char* dst, const char* s) {
-    size_t len = strlen(s);
-    if (len == 0) {
-      // "restore the factory default" — there is no "no PIN" state
-      strncpy(dst, kDefaultPin(), MESHPIGEON_PIN_MAX);
-    } else {
-      memcpy(dst, s, len);  // bounded by valid_pin_set above
-    }
-    dst[MESHPIGEON_PIN_MAX] = 0;
+    // Empty means "restore the factory default" — there is no "no PIN" state.
+    // The whole field is rewritten, so a shorter PIN never keeps the tail of
+    // a longer one. Bounded by valid_pin_set above.
+    const char* pin = s[0] == 0 ? kDefaultPin() : s;
+    const size_t len = strnlen(pin, MESHPIGEON_PIN_MAX);
+    memset(dst, 0, MESHPIGEON_PIN_MAX + 1);
+    memcpy(dst, pin, len);
   }
   static bool valid_ssid(const char* s, size_t len) {
     return s != NULL && len <= MESHPIGEON_SSID_MAX;
@@ -166,9 +165,9 @@ struct DeviceSettings {
  * tolerant: a write interrupted half way must read back as "never written"
  * rather than as a partial record, because the field a partial record is
  * most likely to be missing (the Wi-Fi configuration) is the one that
- * strands a device. On a key-per-field backend that means a commit marker
- * written last (see src/main.cpp); on a single-record backend, a CRC over
- * the record. Absent records fall back to defaults on read, so firmware
+ * strands a device. Both boards keep the device settings as the one record
+ * serialize() produces — replaced atomically, with a CRC over it (see
+ * src/main.cpp). Absent records fall back to defaults on read, so firmware
  * upgraded onto an older install boots cleanly.
  */
 class SettingsStore {

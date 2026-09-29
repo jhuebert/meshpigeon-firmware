@@ -43,8 +43,8 @@ static PacketStore* g_store = NULL;
 static CommandProcessor* g_processor = NULL;
 static bool g_fake_wifi = false;
 
-// --fake-wifi: a scripted OFF -> CONNECTING -> CONNECTED state machine so
-// app CI can drive the Status/wifi paths without hardware (AGENTS.md).
+// --fake-wifi: a scripted Wi-Fi state machine (fake_wifi_tick below) so app
+// CI can drive the Status/wifi paths without hardware (AGENTS.md).
 static meshpigeon_Status_WifiState g_fake_state =
     meshpigeon_Status_WifiState_WIFI_STATE_OFF;
 static uint32_t g_fake_changed_ms = 0;
@@ -84,21 +84,6 @@ class SimHooks : public IBoardHooks {
     return n;
   }
   void fill_status(StatusMessage* status) override {
-    // Scripted transitions: OFF -> CONNECTING (immediately) -> CONNECTED
-    // after ~2 s, driven off the sim clock.
-    if (g_fake_wifi) {
-      uint32_t now = sim_clock.millis();
-      if (g_fake_state == meshpigeon_Status_WifiState_WIFI_STATE_OFF &&
-          now - g_fake_changed_ms >= 0) {
-        g_fake_state = meshpigeon_Status_WifiState_WIFI_STATE_CONNECTING;
-        g_fake_changed_ms = now;
-      } else if (g_fake_state ==
-                     meshpigeon_Status_WifiState_WIFI_STATE_CONNECTING &&
-                 now - g_fake_changed_ms >= 2000) {
-        g_fake_state = meshpigeon_Status_WifiState_WIFI_STATE_CONNECTED;
-        g_fake_changed_ms = now;
-      }
-    }
     status->wifi_state = g_fake_state;
     if (g_fake_state == meshpigeon_Status_WifiState_WIFI_STATE_CONNECTED) {
       strncpy(status->wifi_ssid, "sim-net", sizeof(status->wifi_ssid) - 1);
@@ -115,6 +100,25 @@ class SimHooks : public IBoardHooks {
 };
 
 static SimHooks sim_hooks;
+
+// --fake-wifi: OFF -> CONNECTING (immediately) -> CONNECTED after ~2 s, on
+// the sim clock. Driven from the tick, not from fill_status(), so the state
+// moves with time and every transition is pushed like a board's would be.
+static void fake_wifi_tick() {
+  if (!g_fake_wifi) return;
+  const uint32_t now = sim_clock.millis();
+  if (g_fake_state == meshpigeon_Status_WifiState_WIFI_STATE_OFF) {
+    g_fake_state = meshpigeon_Status_WifiState_WIFI_STATE_CONNECTING;
+  } else if (g_fake_state ==
+                 meshpigeon_Status_WifiState_WIFI_STATE_CONNECTING &&
+             now - g_fake_changed_ms >= 2000) {
+    g_fake_state = meshpigeon_Status_WifiState_WIFI_STATE_CONNECTED;
+  } else {
+    return;
+  }
+  g_fake_changed_ms = now;
+  g_processor->on_wifi_state_changed();
+}
 
 class Client : public IFrameSink {
  public:
@@ -169,6 +173,7 @@ static std::vector<Client*> clients;
 static void sim_loop_tick(uint32_t traffic_ms) {
   sim_clock.advance(1);
   g_processor->poll();  // also refreshes the 64-bit uptime
+  fake_wifi_tick();
 
   // Synthetic OTA traffic so connected apps see live packets.
   static uint32_t last_traffic = 0;

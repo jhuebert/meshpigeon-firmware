@@ -109,7 +109,7 @@ typedef struct _meshpigeon_DeviceInfo {
  still holds the public default PIN "0000" (which is what ships, so a
  client can always read this field to find that out), and false on a
  connection that has authenticated since. Every operation except
- ping / get_device_info / get_status / auth / bootloader answers
+ ping / get_device_info / get_status / auth answers
  ERROR_CODE_AUTH_REQUIRED while this is true. */
     bool auth_required;
     /* Estimated receiver noise floor in dBm, from the most recent packet the
@@ -209,7 +209,7 @@ typedef struct _meshpigeon_Status {
 } meshpigeon_Status;
 
 /* Authenticates this connection. Required (when a PIN is set) before any
- operation other than ping / get_device_info / auth / bootloader. Three
+ operation other than ping / get_device_info / get_status / auth. Three
  failures trigger a 1 s delay per further attempt. */
 typedef struct _meshpigeon_Auth {
     /* 4..8 ASCII digits. */
@@ -227,10 +227,10 @@ typedef struct _meshpigeon_FactoryReset {
     char dummy_field;
 } meshpigeon_FactoryReset;
 
-/* Reboots into bootloader/DFU for in-app flashing. Never gated by auth.
+/* Reboots into bootloader/DFU for in-app flashing. Requires auth when a PIN
+ is set.
  NOTE: the firmware today performs a plain restart, not a real ROM/DFU
- entry — the operation is ungated so that flashing always works on a
- locked node, and the board-specific entry sequence is still to come. */
+ entry — the board-specific entry sequence is still to come. */
 typedef struct _meshpigeon_Bootloader {
     char dummy_field;
 } meshpigeon_Bootloader;

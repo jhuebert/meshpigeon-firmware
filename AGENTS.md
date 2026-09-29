@@ -81,7 +81,7 @@ envelope   := serialized ClientToRadio or RadioToClient
   `SetDeviceSettings` is atomic (validate everything, then apply) and
   capability-gated (Wi-Fi on a non-Wi-Fi board → `NOT_SUPPORTED`, nothing
   applied). Auth gates it, the PIN, radio settings, and the store commands;
-  ping, device info, status, auth and bootloader stay open.
+  ping, device info, status and auth stay open.
 - Auth is per connection, the shipped default PIN is the public `"0000"`, three
   failures are free and then a 1 s penalty window applies (per *device*, not
   per connection, so parallel sockets do not multiply the guess rate). The
@@ -351,8 +351,11 @@ These are not hypotheticals; each one cost a debugging session.
   sink for all centrals, on the reasoning that a NUS link is "one serial
   console" — which is false the moment a second central attaches, and made
   it possible for a second central to inherit the session the first one had
-  authenticated. Each central is now its own `IFrameSink`. Outbound frames
-  still fan out to all of them, so a push is one serialization either way.
+  authenticated. Each central is now its own `IFrameSink`, and notifies only
+  its own central (`ble_gatts_notify_custom` with its connection handle —
+  `NimBLECharacteristic::notify()` sends to *every* subscribed central, which
+  would deliver a response past another connection's auth gate). A push is one
+  serialization either way.
   The flip side is that with **one** sink (the nRF52 boards) the sink *is*
   the link, so `pump()` has to clear `authenticated` when it drops: an
   ESP32-style per-connection sink gets that for free, a static one does not,
@@ -390,6 +393,28 @@ These are not hypotheticals; each one cost a debugging session.
   answers `BUSY` to every `SendPacket` until it is power-cycled. The core
   rejects the retune with `ERROR_CODE_BUSY` and `LoraRadioBase::apply()`
   refuses as a backstop.
+- **A sink's `send_frame()` must call `encode_wire()` first.** `wire()` is only
+  meaningful after it; `Serial.write(wire(), len)` compiles clean and sends
+  whatever the last frame left in the buffer (length being the *envelope's*,
+  not the wire form's). The USB CDC sink shipped that way once.
+- **`NimBLECharacteristic::notify()` is a broadcast.** It sends to every
+  subscribed central, so per-connection sinks that call it deliver each
+  response to every connection (past its auth gate) and each push N times. Use
+  `ble_gatts_notify_custom(conn_handle, …)` and honour the CCCD yourself
+  (`onSubscribe`). The controller also stops advertising when a central
+  connects, so the second and third are only reachable if `pump()` restarts it.
+- **A rename is not applied by `start()` alone.** NimBLE's `start()` returns
+  early while advertising is active (the payload is never rebuilt), and
+  Bluefruit's scan response holds a *copy* of the name taken when `addName()`
+  ran. Both `set_name()`s stop advertising and rebuild the payload first.
+- **`WiFiClient::write()` blocks the caller for up to 10 s** on a peer whose
+  receive window is full — the caller is the board loop. The TCP sink writes
+  with `MSG_DONTWAIT` under a short budget and marks the socket broken
+  instead. Accepted sockets also get TCP keepalive: a peer that vanished
+  without a FIN would otherwise hold one of the four slots indefinitely.
+- **`DeviceSettings::set_pin()` must pad, not just copy.** A `memcpy` of the
+  new PIN's length leaves the tail of a longer old one in place (`12345678` →
+  `4321` reads back as `43215678`). The field is zeroed first.
 - **`FetchPackets` is capped per request** (64 entries). The stream is written
   straight out of the sink inside one handler call, so an unbounded
   `max_count` would let a client hold the loop (and the BLE queue) for as long

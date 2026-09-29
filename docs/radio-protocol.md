@@ -39,15 +39,15 @@ on the client's version — it only reports its own.
 | BLE | Nordic UART Service (`6E400001-B5A3-F393-E0A9-E50E24DCCA9E`) | write-to-device char `6E400002-…`, notify-from-device char `6E400003-…`; multiple centrals on ESP32, single central on nRF52 |
 | Wi-Fi TCP | raw TCP server, default port **5000** | multi-client (≤ 4), ESP32 boards only (§7); mDNS `_meshpigeon._tcp` |
 
-BLE notify chunks frames at ≤ 20 bytes so pre-MTU-exchange clients work.
+BLE notify chunks frames at the negotiated MTU (≤ 20 bytes before an MTU exchange, so clients that never do one work). A frame is notified to the one central it is for — never to the others — and only once that central has enabled notifications.
 
 **A connection is a connection, on every transport.** Auth state lives on
 the connection, not on the transport: each BLE central gets its own, exactly
 like each TCP socket does. A transport that shared one sink across several
 links would hand a second central the session the first one authenticated,
 which on the one transport that admits strangers without a password is the
-whole attack. Notifications still fan out to every attached central, so a
-push is one serialization regardless of how many are listening.
+whole attack. A push is one serialization however many are listening, and
+each central is then sent its own copy.
 
 ## 2. Framing
 
@@ -101,7 +101,7 @@ without breaking older firmware (which skips what it does not know).
 | `Auth` | `Ok` | unlocks *this* connection (§8) |
 | `Reboot` | `Ok`, then restart | requires auth |
 | `FactoryReset` | `Ok`, then wipe + restart | requires auth (§8) |
-| `Bootloader` | `Ok`, then restart | **never** gated — flashing must work on a locked node. A plain restart today: real ROM/DFU entry is board work still to do (§13) |
+| `Bootloader` | `Ok`, then restart | requires auth. A plain restart today: real ROM/DFU entry is board work still to do (§13) |
 
 Async pushes (`id = 0`), broadcast to every connected client:
 
@@ -320,7 +320,7 @@ have a shared pairing concept.
   default in place the node ships open, and a user-chosen replacement is what
   actually protects it. A custom PIN is 4–8 ASCII digits.
 - **Exempt operations** (reachable without authenticating): `ping`,
-  `get_device_info`, `get_status`, `auth`, `bootloader`. Everything else
+  `get_device_info`, `get_status`, `auth`. Everything else
   answers `ERROR_CODE_AUTH_REQUIRED`. The three async pushes that carry
   protected material (§3) are filtered by the same rule.
 - **Per-connection state.** Authenticating on BLE says nothing about the TCP
@@ -377,7 +377,7 @@ which link it is using.
 | `wifi_port` | the configured TCP port (0 on boards with no Wi-Fi). The listener only runs while associated, so this is the port to *dial*, not a promise that something is listening |
 | `wifi_rssi` | dBm; **0 = unknown** (not connected) |
 | `ble_clients` | connected BLE centrals |
-| `usb_cdc_clients` | 1 whenever the board exposes USB CDC — the console is one implicit client and no Arduino core exposes a portable "a host has attached" signal |
+| `usb_cdc_clients` | 1 while a host has the USB CDC port open (the core's `Serial` truth value: link up on ESP32, DTR on nRF52), else 0 |
 | `wifi_tcp_clients` | TCP sockets the Wi-Fi server has open (0 on non-Wi-Fi boards) |
 
 ## 10. Packet store
@@ -442,13 +442,17 @@ The persistence inventory is **closed** — three things, ever:
 |---|---|---|
 | radio settings | NVS `meshpigeon/radio` | `/radio.bin` |
 | boot count | NVS `meshpigeon/boots` | `/boots.bin` |
-| device settings (name, PIN, Wi-Fi) | NVS keys `name`, `pin`, `wifie`, `wifissid`, `wifipass`, `wifiport`, plus the commit marker `dev` (written **last**; its absence means "never written") | `/dev.bin` (one fixed-layout record, serialized by `DeviceSettings::serialize` in the core: version byte + trailing CRC16) |
+| device settings (name, PIN, Wi-Fi) | NVS `meshpigeon/dev` | `/dev.bin` |
 
-The commit markers are what make a write power-loss tolerant, as the
-`SettingsStore` contract requires: NVS commits each key separately, so a cut
-between two of them would otherwise leave a partial record that reads as a
-complete one — and the field that goes missing is the Wi-Fi configuration,
-which is exactly what strands a pigeon that came back after the power went.
+Device settings are one fixed-layout record on both families, serialized by
+`DeviceSettings::serialize` in the core: a version byte and a trailing CRC16.
+One record is what makes a write power-loss tolerant, as the `SettingsStore`
+contract requires: a cut leaves the old record or the new one, never a mix of
+fields — and the field that goes missing from a mix is the Wi-Fi
+configuration, which is exactly what strands a pigeon that came back after
+the power went. (NVS replaces a value atomically; on nRF52 the file is
+written aside and renamed over the old one.) A record that fails its length,
+version or CRC check reads as "never written".
 Nothing else is ever written: **no packet bytes, no timestamps, no counters.**
 Power loss or reboot clears the packet history — that is a hardware property,
 not a policy.
@@ -479,7 +483,7 @@ Deliberately, per the product's guiding principles:
   with a paragraph here justifying it.
 - Reserved for later, capability-gated, and not implemented today: RTC
   wall-clock, Ethernet, LED/button behaviour, and real ROM/DFU entry for
-  `Bootloader` (which today restarts the board, ungated). Rejected outright
+  `Bootloader` (which today restarts the board). Rejected outright
   (it would give the firmware opinions): anything about packet content,
   identity, or keys.
 

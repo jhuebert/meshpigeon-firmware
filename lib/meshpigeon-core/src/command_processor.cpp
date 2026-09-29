@@ -19,6 +19,14 @@ static const char kDefaultNamePrefix[] = "MeshPigeon-";
 // (docs/radio-protocol.md §10).
 static const uint32_t kMaxFetchPerRequest = 64;
 
+/** Copy a C string into a fixed field, truncating, always NUL-terminated
+ *  and NUL-padded (a shorter value never keeps the tail of a longer one). */
+static void copy_str(char* dst, size_t cap, const char* src) {
+  const size_t n = strnlen(src, cap - 1);
+  memcpy(dst, src, n);
+  memset(dst + n, 0, cap - n);
+}
+
 CommandProcessor::CommandProcessor(PacketStore& store, UptimeClock& clock,
                                    SettingsStore& settings_store,
                                    ILoRaRadio& radio, const char* board_name,
@@ -27,10 +35,8 @@ CommandProcessor::CommandProcessor(PacketStore& store, UptimeClock& clock,
       clock_(clock),
       settings_store_(settings_store),
       radio_(radio) {
-  strncpy(board_name_, board_name, sizeof(board_name_) - 1);
-  board_name_[sizeof(board_name_) - 1] = 0;
-  strncpy(fw_version_, fw_version, sizeof(fw_version_) - 1);
-  fw_version_[sizeof(fw_version_) - 1] = 0;
+  copy_str(board_name_, sizeof(board_name_), board_name);
+  copy_str(fw_version_, sizeof(fw_version_), fw_version);
   memset(sinks_, 0, sizeof(sinks_));
 }
 
@@ -53,8 +59,7 @@ void CommandProcessor::remove_sink(IFrameSink* sink) {
 void CommandProcessor::effective_name(
     char out[MESHPIGEON_NAME_MAX + 1]) const {
   if (device_.name[0] != 0) {
-    memcpy(out, device_.name, MESHPIGEON_NAME_MAX);
-    out[MESHPIGEON_NAME_MAX] = 0;
+    copy_str(out, MESHPIGEON_NAME_MAX + 1, device_.name);
     return;
   }
   char suffix[5] = "0000";
@@ -160,11 +165,8 @@ void CommandProcessor::build_device_settings() {
   DeviceSettingsMessage& m = response_.body.device_settings;
   effective_name(m.name);
   m.wifi_enabled = device_.wifi_enabled;
-  strncpy(m.wifi_ssid, device_.wifi_ssid, sizeof(m.wifi_ssid) - 1);
-  m.wifi_ssid[sizeof(m.wifi_ssid) - 1] = 0;
-  strncpy(m.wifi_password, device_.wifi_password,
-          sizeof(m.wifi_password) - 1);
-  m.wifi_password[sizeof(m.wifi_password) - 1] = 0;
+  copy_str(m.wifi_ssid, sizeof(m.wifi_ssid), device_.wifi_ssid);
+  copy_str(m.wifi_password, sizeof(m.wifi_password), device_.wifi_password);
   m.wifi_port = device_.wifi_port;
   // The PIN is write-only on the wire: no field of DeviceSettingsMessage
   // carries it, and none ever will (docs/radio-protocol.md §8).
@@ -224,15 +226,31 @@ void CommandProcessor::send_pong(uint32_t id, const pb_byte_t* payload,
   deliver(to);
 }
 
+void CommandProcessor::send_radio_settings(uint32_t id, IFrameSink* to) {
+  begin_response(id);
+  build_radio_settings();
+  deliver(to);
+}
+
+void CommandProcessor::send_device_settings(uint32_t id, IFrameSink* to) {
+  begin_response(id);
+  build_device_settings();
+  deliver(to);
+}
+
+void CommandProcessor::send_status(uint32_t id, IFrameSink* to) {
+  begin_response(id);
+  build_status();
+  deliver(to);
+}
+
 void CommandProcessor::send_device_info(uint32_t id, IFrameSink* from) {
   begin_response(id);
   response_.which_body = meshpigeon_RadioToClient_device_info_tag;
   DeviceInfoMessage& m = response_.body.device_info;
   m.spec_version = MESHPIGEON_SPEC_VERSION;
-  memcpy(m.fw_version, fw_version_, sizeof(m.fw_version) - 1);
-  m.fw_version[sizeof(m.fw_version) - 1] = 0;
-  memcpy(m.board_name, board_name_, sizeof(m.board_name) - 1);
-  m.board_name[sizeof(m.board_name) - 1] = 0;
+  copy_str(m.fw_version, sizeof(m.fw_version), fw_version_);
+  copy_str(m.board_name, sizeof(m.board_name), board_name_);
   m.capabilities_count =
       hooks_ ? hooks_->fill_capabilities(m.capabilities, kMaxCapabilities) : 0;
   if (m.capabilities_count > kMaxCapabilities) {
@@ -334,329 +352,329 @@ void CommandProcessor::on_envelope(const uint8_t* data, size_t len,
   handle_request(req, from);
 }
 
-void CommandProcessor::handle_request(const ClientToRadioMessage& req,
-                                      IFrameSink* from) {
+void CommandProcessor::handle_set_radio_settings(
+    const ClientToRadioMessage& req, IFrameSink* from) {
+  if (!require_auth(req.id, from)) return;
+  // nanopb decodes an absent submessage as an empty one, so has_settings
+  // is the only thing that distinguishes "no settings at all" from "all
+  // defaults" (AGENTS.md §6).
+  if (!req.body.set_radio_settings.has_settings) {
+    send_error(req.id, meshpigeon_Error_ErrorCode_ERROR_CODE_BAD_PAYLOAD,
+               from);
+    return;
+  }
+  const RadioSettingsMessage& m = req.body.set_radio_settings.settings;
+  // Start from a fully-initialized struct: the radio port keeps its own
+  // copy of what it is handed, and this one is persisted. The region
+  // preset the v1 layout carried is gone, so unset()'s region 0 is what
+  // a new write always carries (docs/radio-protocol.md §6).
+  RadioSettings s = RadioSettings::unset();
+  s.freq_hz = m.freq_hz;
+  // Plain Hz on the wire, 0.01 kHz units internally (10 Hz steps). The
+  // conversion has to be validated on the wire value, not the truncated
+  // one: a bandwidth of 655370 Hz would otherwise wrap to 10 Hz.
+  // power_dbm is bounded to the silicon's ceiling because the value is
+  // narrowed to int8_t on its way to the radio: anything above 127 would
+  // arrive negative (200 -> -56 dBm) and key up at the wrong power
+  // instead of failing. Validating it here is the only place that can
+  // still reject it.
+  if (m.bandwidth_hz == 0 || m.bandwidth_hz % 10 != 0 ||
+      m.bandwidth_hz / 10 > UINT16_MAX || m.freq_hz == 0 || m.sf < 5 ||
+      m.sf > 12 || m.cr < 5 || m.cr > 8 ||
+      m.power_dbm > MESHPIGEON_TX_POWER_MAX) {
+    send_error(req.id, meshpigeon_Error_ErrorCode_ERROR_CODE_BAD_PAYLOAD,
+               from);
+    return;
+  }
+  s.bw_x100khz = (uint16_t)(m.bandwidth_hz / 10);
+  s.sf = (uint8_t)m.sf;
+  s.cr = (uint8_t)m.cr;
+  s.power_dbm = (uint8_t)m.power_dbm;
+  if (first_owner_lock_active() || tx_pending_) {
+    // §6.1: within the grace window only the first-connected client owns
+    // the tuning decision. §4: a retune while the radio is keying up is
+    // BUSY for the same reason a second send is — and here it is not
+    // merely politeness. The tuning sequence puts the part in standby,
+    // which aborts the transmission on the silicon, so the in-flight
+    // TX would never complete and every later SendPacket would answer
+    // BUSY until the board was power-cycled. Refuse instead.
+    send_error(req.id, meshpigeon_Error_ErrorCode_ERROR_CODE_BUSY, from);
+    return;
+  }
+  // A rejected tuning leaves the previous one in force, and the previous
+  // one is what the device is still using — so it must not clear
+  // radio_ok_. Only boot() does that, when the radio failed to come up or
+  // could not accept what was persisted (docs/radio-protocol.md §5).
+  if (!radio_.apply(s)) {
+    send_error(req.id, meshpigeon_Error_ErrorCode_ERROR_CODE_TX_FAILED,
+               from);
+    return;
+  }
+  radio_ok_ = true;  // it just accepted a tuning: the air is usable
+  s.config_epoch = settings_.config_epoch + 1;  // the firmware's own bump
+  settings_ = s;
+  settings_store_.save(s);  // persists on every SET_RADIO (docs/radio-protocol.md §6)
+  set_count_since_boot_++;
+  // Multi-client: everyone else learns about the change (docs/radio-protocol.md §6.1).
+  notify_radio_changed(from);
+  send_radio_settings(req.id, from);
+}
+
+void CommandProcessor::handle_send_packet(
+    const ClientToRadioMessage& req, IFrameSink* from) {
+  if (!require_auth(req.id, from)) return;
+  const pb_byte_t* raw = req.body.send_packet.raw.bytes;
+  pb_size_t n = req.body.send_packet.raw.size;
+  if (n == 0 || n > MESHPIGEON_MAX_RAW_PACKET) {
+    send_error(req.id, meshpigeon_Error_ErrorCode_ERROR_CODE_BAD_PAYLOAD,
+               from);
+    return;
+  }
+  if (!radio_ok_) {
+    // No air to use: refuse before storing, so the app never gets a
+    // TxResult(success) for a packet that was never keyed up.
+    send_error(req.id, meshpigeon_Error_ErrorCode_ERROR_CODE_NO_RADIO,
+               from);
+    return;
+  }
+  if (tx_pending_) {
+    // One TX at a time: the radio keys up serially. Report busy; the
+    // app's outbox owns retry policy (docs/radio-protocol.md §10).
+    send_error(req.id, meshpigeon_Error_ErrorCode_ERROR_CODE_BUSY, from);
+    return;
+  }
+  uint32_t seq =
+      store_.append(clock_.uptime_ms64(), 0, 0, kFlagSent, raw, n, NULL);
+  if (seq == 0) {
+    // The store could not take the packet at all (a pool that cannot
+    // hold it). Refuse before accepting: a PacketAccepted for a seq that
+    // can never be fetched — and a TxResult for it — would both lie.
+    send_error(req.id, meshpigeon_Error_ErrorCode_ERROR_CODE_BUSY, from);
+    return;
+  }
+  // The response comes first (it is what the app is waiting on), then
+  // the outcome — even when the radio refused the send outright.
+  begin_response(req.id);
+  response_.which_body = meshpigeon_RadioToClient_packet_accepted_tag;
+  response_.body.packet_accepted.seq = seq;
+  deliver(from);
+  if (radio_.transmit(raw, n) != 0) {
+    emit_tx_result(seq, false);  // refused immediately: no wait
+    return;
+  }
+  tx_pending_ = true;
+  tx_pending_seq_ = seq;
+}
+
+void CommandProcessor::handle_fetch_packets(
+    const ClientToRadioMessage& req, IFrameSink* from) {
+  if (!require_auth(req.id, from)) return;
+  const uint32_t id = req.id;
+  uint32_t max_count = req.body.fetch_packets.max_count;
+  // max_count = 0 means "everything", the same convention since_seq = 0
+  // uses: 0 is never a meaningful bound, and a client that meant "all of
+  // them" would otherwise get an empty FetchEnd and read it as an empty
+  // store. It is clamped like any other value.
+  if (max_count == 0 || max_count > kMaxFetchPerRequest) {
+    max_count = kMaxFetchPerRequest;
+  }
+  uint32_t delivered = 0;
+  store_.fetch_since(req.body.fetch_packets.since_seq, max_count,
+                     [&](const StoredPacket& e) {
+                       build_packet_entry(id, e);
+                       deliver(from);
+                       delivered++;
+                       return true;
+                     });
+  begin_response(id);
+  response_.which_body = meshpigeon_RadioToClient_fetch_end_tag;
+  response_.body.fetch_end.count = delivered;
+  deliver(from);
+}
+
+void CommandProcessor::handle_set_device_settings(
+    const ClientToRadioMessage& req, IFrameSink* from) {
+  if (!require_auth(req.id, from)) return;
+  const SetDeviceSettingsMessage& m = req.body.set_device_settings;
+  DeviceSettings next = device_;
+  bool wifi_touched = m.has_wifi_enabled || m.has_wifi_ssid ||
+                      m.has_wifi_password || m.has_wifi_port;
+  // Validate everything first: one bad field rejects the whole request
+  // with nothing applied (docs/radio-protocol.md §8.1).
+  if ((m.has_name &&
+       !DeviceSettings::valid_name(m.name, strlen(m.name))) ||
+      (m.has_pin &&
+       !DeviceSettings::valid_pin_set(m.pin, strlen(m.pin))) ||
+      (m.has_wifi_ssid &&
+       !DeviceSettings::valid_ssid(m.wifi_ssid, strlen(m.wifi_ssid))) ||
+      (m.has_wifi_password &&
+       !DeviceSettings::valid_password(m.wifi_password,
+                                       strlen(m.wifi_password))) ||
+      (m.has_wifi_port && !DeviceSettings::valid_port(m.wifi_port))) {
+    send_error(req.id, meshpigeon_Error_ErrorCode_ERROR_CODE_BAD_PAYLOAD,
+               from);
+    return;
+  }
+  if (wifi_touched && hooks_ != NULL && !hooks_->wifi_supported()) {
+    // Capability-gated: the board would never honor these; reject
+    // atomically so a stale client can't leave a dead setting behind
+    // (docs/radio-protocol.md §8.1).
+    send_error(req.id, meshpigeon_Error_ErrorCode_ERROR_CODE_NOT_SUPPORTED,
+               from);
+    return;
+  }
+  // ---- apply: validated, so every one of these succeeds. Build the
+  // whole candidate first and decide once whether it is a change, so
+  // the side effects below can only ever run for a real change. ----
+  if (m.has_name) copy_str(next.name, sizeof(next.name), m.name);
+  if (m.has_pin) DeviceSettings::set_pin(next.pin, m.pin);
+  if (m.has_wifi_enabled) next.wifi_enabled = m.wifi_enabled;
+  if (m.has_wifi_ssid) {
+    copy_str(next.wifi_ssid, sizeof(next.wifi_ssid), m.wifi_ssid);
+  }
+  if (m.has_wifi_password) {
+    copy_str(next.wifi_password, sizeof(next.wifi_password),
+             m.wifi_password);
+  }
+  if (m.has_wifi_port) next.wifi_port = (uint16_t)m.wifi_port;
+
+  // A write that lands on the values already in force is a no-op, and a
+  // no-op is not a change: no flash write (the persistence inventory is
+  // closed and NVS erases wear out), nothing re-advertised or re-applied,
+  // and no "another client changed settings" push to wake every other
+  // client with. The response is still sent — the client asked for the
+  // read model. Rewriting the PIN with the value it already holds is
+  // therefore a no-op too, so it does not de-authorize the other
+  // connections: a rotation moves the flags, a no-op does not
+  // (docs/radio-protocol.md §8.1).
+  if (next == device_) {
+    send_device_settings(req.id, from);
+    return;
+  }
+  device_ = next;
+
+  if (m.has_pin) {
+    // The lock changed, so the lock rule now applies in both directions:
+    // every other connection loses the session it held (a peer that knew
+    // the old PIN must not survive a rotation), and the writer gains
+    // one. Without the second half, setting a PIN from the shipped
+    // default would lock the writer out of the device it just
+    // configured — it proved it knows the new PIN by writing it
+    // (docs/radio-protocol.md §8.1).
+    from->authenticated = true;
+    for (size_t i = 0; i < num_sinks_; i++) {
+      if (sinks_[i] != NULL && sinks_[i] != from) {
+        sinks_[i]->authenticated = false;
+      }
+    }
+    auth_fails_ = 0;         // the lock changed: fresh brute-force budget
+    auth_backoff_until_ = 0;  // and no pending penalty
+  }
+  settings_store_.save_device(device_);  // persists immediately (docs §8.1)
+  if (m.has_name && hooks_) {            // rename + re-advertise (§8.3)
+    char effective[MESHPIGEON_NAME_MAX + 1];
+    effective_name(effective);
+    hooks_->set_device_name(effective);
+  }
+  if (wifi_touched && hooks_) hooks_->apply_wifi(device_);
+  // Everyone else learns about the change — the RADIO_CHANGED analogue.
+  notify_device_settings_changed(from);
+  send_device_settings(req.id, from);
+}
+
+void CommandProcessor::handle_auth(
+    const ClientToRadioMessage& req, IFrameSink* from) {
+  if (auth_backoff_active()) {  // slow brute force, not even evaluated (§8.2)
+    send_error(req.id, meshpigeon_Error_ErrorCode_ERROR_CODE_AUTH_REQUIRED,
+               from);
+    return;
+  }
+  const AuthMessage& m = req.body.auth;
+  if (from->authenticated || device_.pin_is_default() ||
+      pin_matches(m.pin, strlen(m.pin))) {
+    from->authenticated = true;
+    auth_fails_ = 0;
+    send_ok(req.id, from);
+    return;
+  }
+  note_auth_failure();
+  send_error(req.id, meshpigeon_Error_ErrorCode_ERROR_CODE_AUTH_REQUIRED,
+             from);
+}
+
+void CommandProcessor::handle_request(
+    const ClientToRadioMessage& req, IFrameSink* from) {
   switch (req.which_body) {
-    case kOpPing: {
+    case kOpPing:
       send_pong(req.id, req.body.ping.payload.bytes, req.body.ping.payload.size,
                 from);
       return;
-    }
 
     case kOpGetDeviceInfo:
       send_device_info(req.id, from);
       return;
 
-    case kOpGetRadioSettings: {
+    case kOpGetRadioSettings:
       if (!require_auth(req.id, from)) return;
-      begin_response(req.id);
-      build_radio_settings();
-      deliver(from);
+      send_radio_settings(req.id, from);
       return;
-    }
 
-    case kOpSetRadioSettings: {
-      if (!require_auth(req.id, from)) return;
-      // nanopb decodes an absent submessage as an empty one, so has_settings
-      // is the only thing that distinguishes "no settings at all" from "all
-      // defaults" (AGENTS.md §6).
-      if (!req.body.set_radio_settings.has_settings) {
-        send_error(req.id, meshpigeon_Error_ErrorCode_ERROR_CODE_BAD_PAYLOAD,
-                   from);
-        return;
-      }
-      const RadioSettingsMessage& m = req.body.set_radio_settings.settings;
-      // Start from a fully-initialized struct: the radio port keeps its own
-      // copy of what it is handed, and this one is persisted. The region
-      // preset the v1 layout carried is gone, so unset()'s region 0 is what
-      // a new write always carries (docs/radio-protocol.md §6).
-      RadioSettings s = RadioSettings::unset();
-      s.freq_hz = m.freq_hz;
-      // Plain Hz on the wire, 0.01 kHz units internally (10 Hz steps). The
-      // conversion has to be validated on the wire value, not the truncated
-      // one: a bandwidth of 655370 Hz would otherwise wrap to 10 Hz.
-      // power_dbm is bounded to the silicon's ceiling because the value is
-      // narrowed to int8_t on its way to the radio: anything above 127 would
-      // arrive negative (200 -> -56 dBm) and key up at the wrong power
-      // instead of failing. Validating it here is the only place that can
-      // still reject it.
-      if (m.bandwidth_hz == 0 || m.bandwidth_hz % 10 != 0 ||
-          m.bandwidth_hz / 10 > UINT16_MAX || m.freq_hz == 0 || m.sf < 5 ||
-          m.sf > 12 || m.cr < 5 || m.cr > 8 ||
-          m.power_dbm > MESHPIGEON_TX_POWER_MAX) {
-        send_error(req.id, meshpigeon_Error_ErrorCode_ERROR_CODE_BAD_PAYLOAD,
-                   from);
-        return;
-      }
-      s.bw_x100khz = (uint16_t)(m.bandwidth_hz / 10);
-      s.sf = (uint8_t)m.sf;
-      s.cr = (uint8_t)m.cr;
-      s.power_dbm = (uint8_t)m.power_dbm;
-      if (first_owner_lock_active() || tx_pending_) {
-        // §6.1: within the grace window only the first-connected client owns
-        // the tuning decision. §4: a retune while the radio is keying up is
-        // BUSY for the same reason a second send is — and here it is not
-        // merely politeness. The tuning sequence puts the part in standby,
-        // which aborts the transmission on the silicon, so the in-flight
-        // TX would never complete and every later SendPacket would answer
-        // BUSY until the board was power-cycled. Refuse instead.
-        send_error(req.id, meshpigeon_Error_ErrorCode_ERROR_CODE_BUSY, from);
-        return;
-      }
-      // A rejected tuning leaves the previous one in force, and the previous
-      // one is what the device is still using — so it must not clear
-      // radio_ok_. Only boot() does that, when the radio failed to come up or
-      // could not accept what was persisted (docs/radio-protocol.md §5).
-      if (!radio_.apply(s)) {
-        send_error(req.id, meshpigeon_Error_ErrorCode_ERROR_CODE_TX_FAILED,
-                   from);
-        return;
-      }
-      radio_ok_ = true;  // it just accepted a tuning: the air is usable
-      s.config_epoch = settings_.config_epoch + 1;  // the firmware's own bump
-      settings_ = s;
-      settings_store_.save(s);  // persists on every SET_RADIO (docs/radio-protocol.md §6)
-      set_count_since_boot_++;
-      // Multi-client: everyone else learns about the change (docs/radio-protocol.md §6.1).
-      notify_radio_changed(from);
-      begin_response(req.id);
-      build_radio_settings();  // post-bump, to the issuer
-      deliver(from);
+    case kOpSetRadioSettings:
+      handle_set_radio_settings(req, from);
       return;
-    }
 
-    case kOpSendPacket: {
-      if (!require_auth(req.id, from)) return;
-      const pb_byte_t* raw = req.body.send_packet.raw.bytes;
-      pb_size_t n = req.body.send_packet.raw.size;
-      if (n == 0 || n > MESHPIGEON_MAX_RAW_PACKET) {
-        send_error(req.id, meshpigeon_Error_ErrorCode_ERROR_CODE_BAD_PAYLOAD,
-                   from);
-        return;
-      }
-      if (!radio_ok_) {
-        // No air to use: refuse before storing, so the app never gets a
-        // TxResult(success) for a packet that was never keyed up.
-        send_error(req.id, meshpigeon_Error_ErrorCode_ERROR_CODE_NO_RADIO,
-                   from);
-        return;
-      }
-      if (tx_pending_) {
-        // One TX at a time: the radio keys up serially. Report busy; the
-        // app's outbox owns retry policy (docs/radio-protocol.md §10).
-        send_error(req.id, meshpigeon_Error_ErrorCode_ERROR_CODE_BUSY, from);
-        return;
-      }
-      uint32_t seq =
-          store_.append(clock_.uptime_ms64(), 0, 0, kFlagSent, raw, n, NULL);
-      if (seq == 0) {
-        // The store could not take the packet at all (a pool that cannot
-        // hold it). Refuse before accepting: a PacketAccepted for a seq that
-        // can never be fetched — and a TxResult for it — would both lie.
-        send_error(req.id, meshpigeon_Error_ErrorCode_ERROR_CODE_BUSY, from);
-        return;
-      }
-      // The response comes first (it is what the app is waiting on), then
-      // the outcome — even when the radio refused the send outright.
-      begin_response(req.id);
-      response_.which_body = meshpigeon_RadioToClient_packet_accepted_tag;
-      response_.body.packet_accepted.seq = seq;
-      deliver(from);
-      if (radio_.transmit(raw, n) != 0) {
-        emit_tx_result(seq, false);  // refused immediately: no wait
-        return;
-      }
-      tx_pending_ = true;
-      tx_pending_seq_ = seq;
+    case kOpSendPacket:
+      handle_send_packet(req, from);
       return;
-    }
 
-    case kOpFetchPackets: {
-      if (!require_auth(req.id, from)) return;
-      const uint32_t id = req.id;
-      uint32_t max_count = req.body.fetch_packets.max_count;
-      // max_count = 0 means "everything", the same convention since_seq = 0
-      // uses: 0 is never a meaningful bound, and a client that meant "all of
-      // them" would otherwise get an empty FetchEnd and read it as an empty
-      // store. It is clamped like any other value.
-      if (max_count == 0 || max_count > kMaxFetchPerRequest) {
-        max_count = kMaxFetchPerRequest;
-      }
-      uint32_t delivered = 0;
-      store_.fetch_since(req.body.fetch_packets.since_seq, max_count,
-                         [&](const StoredPacket& e) {
-                           build_packet_entry(id, e);
-                           deliver(from);
-                           delivered++;
-                           return true;
-                         });
-      begin_response(id);
-      response_.which_body = meshpigeon_RadioToClient_fetch_end_tag;
-      response_.body.fetch_end.count = delivered;
-      deliver(from);
+    case kOpFetchPackets:
+      handle_fetch_packets(req, from);
       return;
-    }
 
-    case kOpPurgeStore: {
+    case kOpPurgeStore:
       if (!require_auth(req.id, from)) return;
       store_.clear();
       send_ok(req.id, from);
       return;
-    }
 
-    case kOpBootloader: {
-      // Always allowed: flashing must be reachable on a locked device (§8.2).
+    case kOpBootloader:
+      // Gated like Reboot: today it is a plain restart, and an ungated
+      // restart is a remote off-switch for anything that can open a socket.
+      // Recovering a node whose PIN is lost is a physical-access job (§8.2).
+      if (!require_auth(req.id, from)) return;
       send_ok(req.id, from);
       if (hooks_) hooks_->reboot_to_bootloader();
       return;
-    }
 
-    case kOpGetDeviceSettings: {
+    case kOpGetDeviceSettings:
       // The Wi-Fi password lives in here, hence the gate (§8).
       if (!require_auth(req.id, from)) return;
-      begin_response(req.id);
-      build_device_settings();
-      deliver(from);
+      send_device_settings(req.id, from);
       return;
-    }
 
-    case kOpSetDeviceSettings: {
-      if (!require_auth(req.id, from)) return;
-      const SetDeviceSettingsMessage& m = req.body.set_device_settings;
-      DeviceSettings next = device_;
-      bool wifi_touched = m.has_wifi_enabled || m.has_wifi_ssid ||
-                          m.has_wifi_password || m.has_wifi_port;
-      // Validate everything first: one bad field rejects the whole request
-      // with nothing applied (docs/radio-protocol.md §8.1).
-      if ((m.has_name &&
-           !DeviceSettings::valid_name(m.name, strlen(m.name))) ||
-          (m.has_pin &&
-           !DeviceSettings::valid_pin_set(m.pin, strlen(m.pin))) ||
-          (m.has_wifi_ssid &&
-           !DeviceSettings::valid_ssid(m.wifi_ssid, strlen(m.wifi_ssid))) ||
-          (m.has_wifi_password &&
-           !DeviceSettings::valid_password(m.wifi_password,
-                                           strlen(m.wifi_password))) ||
-          (m.has_wifi_port && !DeviceSettings::valid_port(m.wifi_port))) {
-        send_error(req.id, meshpigeon_Error_ErrorCode_ERROR_CODE_BAD_PAYLOAD,
-                   from);
-        return;
-      }
-      if (wifi_touched && hooks_ != NULL && !hooks_->wifi_supported()) {
-        // Capability-gated: the board would never honor these; reject
-        // atomically so a stale client can't leave a dead setting behind
-        // (docs/radio-protocol.md §8.1).
-        send_error(req.id, meshpigeon_Error_ErrorCode_ERROR_CODE_NOT_SUPPORTED,
-                   from);
-        return;
-      }
-      // ---- apply: validated, so every one of these succeeds. Build the
-      // whole candidate first and decide once whether it is a change, so
-      // the side effects below can only ever run for a real change. ----
-      if (m.has_name) {
-        strncpy(next.name, m.name, MESHPIGEON_NAME_MAX);
-        next.name[MESHPIGEON_NAME_MAX] = 0;
-      }
-      if (m.has_pin) DeviceSettings::set_pin(next.pin, m.pin);
-      if (m.has_wifi_enabled) next.wifi_enabled = m.wifi_enabled;
-      if (m.has_wifi_ssid) {
-        strncpy(next.wifi_ssid, m.wifi_ssid, MESHPIGEON_SSID_MAX);
-        next.wifi_ssid[MESHPIGEON_SSID_MAX] = 0;
-      }
-      if (m.has_wifi_password) {
-        strncpy(next.wifi_password, m.wifi_password, MESHPIGEON_PASS_MAX);
-        next.wifi_password[MESHPIGEON_PASS_MAX] = 0;
-      }
-      if (m.has_wifi_port) next.wifi_port = (uint16_t)m.wifi_port;
-
-      // A write that lands on the values already in force is a no-op, and a
-      // no-op is not a change: no flash write (the persistence inventory is
-      // closed and NVS erases wear out), nothing re-advertised or re-applied,
-      // and no "another client changed settings" push to wake every other
-      // client with. The response is still sent — the client asked for the
-      // read model. Rewriting the PIN with the value it already holds is
-      // therefore a no-op too, so it does not de-authorize the other
-      // connections: a rotation moves the flags, a no-op does not
-      // (docs/radio-protocol.md §8.1).
-      if (next == device_) {
-        begin_response(req.id);
-        build_device_settings();
-        deliver(from);
-        return;
-      }
-      device_ = next;
-
-      if (m.has_pin) {
-        // The lock changed, so the lock rule now applies in both directions:
-        // every other connection loses the session it held (a peer that knew
-        // the old PIN must not survive a rotation), and the writer gains
-        // one. Without the second half, setting a PIN from the shipped
-        // default would lock the writer out of the device it just
-        // configured — it proved it knows the new PIN by writing it
-        // (docs/radio-protocol.md §8.1).
-        from->authenticated = true;
-        for (size_t i = 0; i < num_sinks_; i++) {
-          if (sinks_[i] != NULL && sinks_[i] != from) {
-            sinks_[i]->authenticated = false;
-          }
-        }
-        auth_fails_ = 0;         // the lock changed: fresh brute-force budget
-        auth_backoff_until_ = 0;  // and no pending penalty
-      }
-      settings_store_.save_device(device_);  // persists immediately (docs §8.1)
-      if (m.has_name && hooks_) {            // rename + re-advertise (§8.3)
-        char effective[MESHPIGEON_NAME_MAX + 1];
-        effective_name(effective);
-        hooks_->set_device_name(effective);
-      }
-      if (wifi_touched && hooks_) hooks_->apply_wifi(device_);
-      // Everyone else learns about the change — the RADIO_CHANGED analogue.
-      notify_device_settings_changed(from);
-      begin_response(req.id);
-      build_device_settings();  // full post-write state to the issuer
-      deliver(from);
+    case kOpSetDeviceSettings:
+      handle_set_device_settings(req, from);
       return;
-    }
 
-    case kOpGetStatus: {
+    case kOpGetStatus:
       // Readable on every transport, auth or not: this is how a client on
       // BLE learns what the Wi-Fi is doing (docs/radio-protocol.md §9).
-      begin_response(req.id);
-      build_status();
-      deliver(from);
+      send_status(req.id, from);
       return;
-    }
 
-    case kOpAuth: {
-      if (auth_backoff_active()) {  // slow brute force, not even evaluated (§8.2)
-        send_error(req.id, meshpigeon_Error_ErrorCode_ERROR_CODE_AUTH_REQUIRED,
-                   from);
-        return;
-      }
-      const AuthMessage& m = req.body.auth;
-      if (from->authenticated || device_.pin_is_default() ||
-          pin_matches(m.pin, strlen(m.pin))) {
-        from->authenticated = true;
-        auth_fails_ = 0;
-        send_ok(req.id, from);
-        return;
-      }
-      note_auth_failure();
-      send_error(req.id, meshpigeon_Error_ErrorCode_ERROR_CODE_AUTH_REQUIRED,
-                 from);
+    case kOpAuth:
+      handle_auth(req, from);
       return;
-    }
 
-    case kOpReboot: {
+    case kOpReboot:
       if (!require_auth(req.id, from)) return;
       send_ok(req.id, from);
       if (hooks_) hooks_->reboot();
       return;
-    }
 
-    case kOpFactoryReset: {
+    case kOpFactoryReset:
       if (!require_auth(req.id, from)) return;
-      device_.clear();              // in RAM too: the response must agree
+      device_.clear();  // in RAM too: the response must agree
       // The persistence layer forgets the record rather than having defaults
       // written back over it (docs/radio-protocol.md §10).
       settings_store_.clear_device();
@@ -664,7 +682,6 @@ void CommandProcessor::handle_request(const ClientToRadioMessage& req,
       send_ok(req.id, from);
       if (hooks_) hooks_->factory_reset();  // then reboot
       return;
-    }
 
     default:
       // Unknown oneof variant: newer client, older radio (evolution policy).

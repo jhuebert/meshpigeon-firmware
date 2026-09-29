@@ -125,6 +125,14 @@ See [docs/radio-protocol.md](docs/radio-protocol.md).
       callback runs on NimBLE's own task; everything core-facing happens in
       the board loop.)
 - [ ] `Reboot` / `FactoryReset` answer `Ok` *before* the board goes down.
+- [ ] USB CDC answers a `GetDeviceInfo` with a frame the host can decode
+      (a transport that forgets `encode_wire()` sends stale buffer bytes).
+- [ ] With two BLE centrals attached, each receives only the responses to its
+      own requests, and one copy of every push.
+- [ ] A rename shows up in a scanner without anyone connecting first, on both
+      BLE families.
+- [ ] A TCP peer that opens a socket, pings and never reads costs the radio
+      no more than ~250 ms before its socket is closed.
 - [ ] 3 concurrent BLE clients can fetch history simultaneously.
 - [ ] Coexists with MeshCore repeaters on-air.
 

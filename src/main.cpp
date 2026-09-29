@@ -147,12 +147,9 @@ class BoardHooks : public IBoardHooks {
   }
 
   uint8_t usb_cdc_clients() override {
-    // The console is one implicit client, and no Arduino core exposes a
-    // portable "a host has attached" signal (ESP32's HWCDC and the nRF52
-    // BSP's USB CDC both lack one). So this reports the transport being
-    // present, which is always true here — the CDC sink is unconditionally
-    // built. Documented as such in docs/radio-protocol.md §9.
-    return 1;
+    // `Serial` converts to true while a host has the port open: HWCDC
+    // reports the USB link, the nRF52 BSP's CDC reports DTR.
+    return Serial ? 1 : 0;
   }
 
   uint8_t wifi_tcp_clients() override {
@@ -223,8 +220,7 @@ class BoardSettingsStore : public SettingsStore {
   bool save(const RadioSettings& s) override {
     uint8_t buf[RadioSettings::kSerializedSize];
     s.serialize(buf);
-    nvs_.putBytes("radio", buf, sizeof(buf));
-    return true;
+    return nvs_.putBytes("radio", buf, sizeof(buf)) == sizeof(buf);
   }
   bool load(RadioSettings* out) override {
     size_t n = nvs_.getBytesLength("radio");
@@ -236,57 +232,30 @@ class BoardSettingsStore : public SettingsStore {
   uint32_t load_boot_count() { return nvs_.getULong("boots", 0); }
   void save_boot_count(uint32_t n) { nvs_.putULong("boots", n); }
 
-  // Device settings: one NVS key per field, so a firmware that grows a
-  // field never has to migrate a blob.
+  // Device settings in one NVS blob — the record the core serializes
+  // (DeviceSettings::serialize: version byte + trailing CRC16), the same
+  // bytes the nRF52 file holds. A single key is what makes the write
+  // power-loss tolerant: NVS replaces a value atomically, so a cut leaves the
+  // old record or the new one, never a mix of fields — and the field that
+  // goes missing from a mix is the Wi-Fi configuration, which is exactly what
+  // strands a pigeon that came back after the power went. The CRC catches
+  // whatever a single key cannot, and the format is covered by host tests
+  // instead of only ever being compiled for this target.
   bool save_device(const DeviceSettings& s) override {
-    nvs_.putString("name", s.name);
-    nvs_.putString("pin", s.pin);
-    nvs_.putUChar("wifie", s.wifi_enabled ? 1 : 0);
-    nvs_.putString("wifissid", s.wifi_ssid);
-    nvs_.putString("wifipass", s.wifi_password);
-    nvs_.putUShort("wifiport", s.wifi_port);
-    // The commit marker, written LAST and never in the middle. NVS commits
-    // each key separately, so a power cut between two of them leaves a
-    // partial record — and a partial record is indistinguishable from a
-    // complete one unless something says "I finished". The field that goes
-    // missing is the Wi-Fi configuration, which is exactly what strands a
-    // pigeon that came back after the power went (docs/radio-protocol.md §11).
-    nvs_.putUChar("dev", kDeviceVersion);
-    return true;
+    uint8_t buf[DeviceSettings::kSerializedSize];
+    s.serialize(buf);
+    return nvs_.putBytes("dev", buf, sizeof(buf)) == sizeof(buf);
   }
   bool load_device(DeviceSettings* out) override {
     out->clear();
-    if (nvs_.getUChar("dev", 0) != kDeviceVersion) return false;  // never written
-    strncpy(out->name, nvs_.getString("name", "").c_str(),
-            MESHPIGEON_NAME_MAX);
-    out->name[MESHPIGEON_NAME_MAX] = 0;
-    strncpy(out->pin, nvs_.getString("pin", "0000").c_str(), MESHPIGEON_PIN_MAX);
-    out->pin[MESHPIGEON_PIN_MAX] = 0;
-    out->wifi_enabled = nvs_.getUChar("wifie", 0) != 0;
-    strncpy(out->wifi_ssid, nvs_.getString("wifissid", "").c_str(),
-            MESHPIGEON_SSID_MAX);
-    out->wifi_ssid[MESHPIGEON_SSID_MAX] = 0;
-    strncpy(out->wifi_password, nvs_.getString("wifipass", "").c_str(),
-            MESHPIGEON_PASS_MAX);
-    out->wifi_password[MESHPIGEON_PASS_MAX] = 0;
-    out->wifi_port = nvs_.getUShort("wifiport", MESHPIGEON_WIFI_PORT_DEFAULT);
-    return true;
+    uint8_t buf[DeviceSettings::kSerializedSize];
+    if (nvs_.getBytesLength("dev") != sizeof(buf)) return false;  // never written
+    nvs_.getBytes("dev", buf, sizeof(buf));
+    return out->deserialize(buf, sizeof(buf));
   }
-  void clear_device() override {
-    nvs_.remove("name");
-    nvs_.remove("pin");
-    nvs_.remove("wifie");
-    nvs_.remove("wifissid");
-    nvs_.remove("wifipass");
-    nvs_.remove("wifiport");
-    nvs_.remove("dev");
-  }
+  void clear_device() override { nvs_.remove("dev"); }
 
  private:
-  // Bumped when the key set below changes shape, so a record written by an
-  // older firmware reads as "never written" instead of as garbage.
-  static const uint8_t kDeviceVersion = 1;
-
   Preferences nvs_;
 };
 
@@ -299,17 +268,7 @@ class BoardSettingsStore : public SettingsStore {
   bool save(const RadioSettings& s) override {
     uint8_t buf[RadioSettings::kSerializedSize];
     s.serialize(buf);
-    InternalFS.begin();
-    // FILE_O_WRITE does not truncate (appends) on this BSP — remove first,
-    // or load() would keep reading the first record (MeshCore IdentityStore
-    // uses the same remove-then-write pattern on nRF52).
-    InternalFS.remove("/radio.bin");
-    Adafruit_LittleFS_Namespace::File f("radio.bin",
-                                        Adafruit_LittleFS_Namespace::FILE_O_WRITE, InternalFS);
-    if (!f) return false;
-    f.write(buf, sizeof(buf));
-    f.close();
-    return true;
+    return write_record("/radio.bin", buf, sizeof(buf));
   }
   bool load(RadioSettings* out) override {
     InternalFS.begin();
@@ -337,15 +296,9 @@ class BoardSettingsStore : public SettingsStore {
            ((uint32_t)buf[2] << 16) | ((uint32_t)buf[3] << 24);
   }
   void save_boot_count(uint32_t n) {
-    InternalFS.begin();
-    InternalFS.remove("/boots.bin");  // FILE_O_WRITE appends, no truncate
-    Adafruit_LittleFS_Namespace::File f("boots.bin",
-                                        Adafruit_LittleFS_Namespace::FILE_O_WRITE, InternalFS);
-    if (!f) return;
     uint8_t buf[4] = {(uint8_t)(n & 0xFF), (uint8_t)((n >> 8) & 0xFF),
                       (uint8_t)((n >> 16) & 0xFF), (uint8_t)((n >> 24) & 0xFF)};
-    f.write(buf, 4);
-    f.close();
+    write_record("/boots.bin", buf, sizeof(buf));
   }
 
   // Device settings in one fixed-layout record — the format lives in the
@@ -358,14 +311,7 @@ class BoardSettingsStore : public SettingsStore {
   bool save_device(const DeviceSettings& s) override {
     uint8_t buf[DeviceSettings::kSerializedSize];
     s.serialize(buf);
-    InternalFS.begin();
-    InternalFS.remove("/dev.bin");  // FILE_O_WRITE appends, no truncate
-    Adafruit_LittleFS_Namespace::File f("dev.bin",
-                                        Adafruit_LittleFS_Namespace::FILE_O_WRITE, InternalFS);
-    if (!f) return false;
-    f.write(buf, sizeof(buf));
-    f.close();
-    return true;
+    return write_record("/dev.bin", buf, sizeof(buf));
   }
   bool load_device(DeviceSettings* out) override {
     out->clear();
@@ -383,6 +329,26 @@ class BoardSettingsStore : public SettingsStore {
   void clear_device() override {
     InternalFS.begin();
     InternalFS.remove("/dev.bin");
+  }
+
+ private:
+  // Replace a record so a power cut leaves the old one or the new one. The
+  // BSP's FILE_O_WRITE appends rather than truncates, so the obvious
+  // remove-then-write (the pattern MeshCore's IdentityStore uses) loses the
+  // record outright if the power goes in between — and for the device
+  // settings that resets the PIN to the public default. Instead: write a
+  // temp file, then rename it over the target, which littlefs does
+  // atomically.
+  static bool write_record(const char* path, const uint8_t* buf, size_t len) {
+    static const char kTmp[] = "/tmp.bin";
+    InternalFS.begin();
+    InternalFS.remove(kTmp);  // leftover of a write that was cut short
+    Adafruit_LittleFS_Namespace::File f(kTmp,
+                                        Adafruit_LittleFS_Namespace::FILE_O_WRITE, InternalFS);
+    if (!f) return false;
+    const bool ok = f.write(buf, len) == len;
+    f.close();
+    return ok && InternalFS.rename(kTmp, path);
   }
 };
 #endif
@@ -478,10 +444,9 @@ void setup() {
   wifi_hostname(hostname);
   g_wifi->begin(*g_processor, hostname);
   // A pigeon on a shelf with Wi-Fi enabled comes back up on the network
-  // with no app attached (docs/radio-protocol.md §7).
-  if (g_processor->device_settings().wifi_enabled) {
-    g_wifi->apply(g_processor->device_settings());
-  }
+  // with no app attached (docs/radio-protocol.md §7). Applied even when it is
+  // disabled, so Status still reports the configured port.
+  g_wifi->apply(g_processor->device_settings());
 #endif
 
   // USB CDC takes a moment on some boards; don't block boot on it.

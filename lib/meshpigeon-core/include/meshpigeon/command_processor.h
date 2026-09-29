@@ -197,6 +197,14 @@ class CommandProcessor {
 
  private:
   void handle_request(const ClientToRadioMessage& req, IFrameSink* from);
+  // The operations too long to sit inside handle_request's switch.
+  void handle_set_radio_settings(const ClientToRadioMessage& req,
+                                 IFrameSink* from);
+  void handle_send_packet(const ClientToRadioMessage& req, IFrameSink* from);
+  void handle_fetch_packets(const ClientToRadioMessage& req, IFrameSink* from);
+  void handle_set_device_settings(const ClientToRadioMessage& req,
+                                  IFrameSink* from);
+  void handle_auth(const ClientToRadioMessage& req, IFrameSink* from);
 
   // ---- response building: fill response_, then deliver/broadcast it ----
   /** Start a fresh response carrying `id` (0 for an async push). This is
@@ -236,6 +244,11 @@ class CommandProcessor {
   void send_pong(uint32_t id, const pb_byte_t* payload, pb_size_t size,
                  IFrameSink* to);
   void send_device_info(uint32_t id, IFrameSink* from);
+  /** The three read models, as the response to a request (or a push's
+   *  payload, via the build_* they share). */
+  void send_radio_settings(uint32_t id, IFrameSink* to);
+  void send_device_settings(uint32_t id, IFrameSink* to);
+  void send_status(uint32_t id, IFrameSink* to);
   /** true if the client may proceed; otherwise answers AUTH_REQUIRED. */
   bool require_auth(uint32_t id, IFrameSink* from);
   /** May this connection see gated material? True when it authenticated, or

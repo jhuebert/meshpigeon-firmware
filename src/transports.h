@@ -27,7 +27,8 @@ class UsbCdcSink : public IFrameSink {
   }
 
   void send_frame(const uint8_t* decoded, size_t len) override {
-    Serial.write(wire(), len);
+    const size_t n = encode_wire(decoded, len);
+    Serial.write(wire(), n);
     Serial.flush();
   }
 
@@ -104,9 +105,8 @@ class RxFifo {
  * the PIN — a shared sink would let a second central connect mid-session and
  * inherit a session the first one authenticated, so "auth is per
  * connection" would quietly be false on the one transport that accepts
- * strangers without a password (docs/radio-protocol.md §8.2). Outbound
- * frames still fan out to every central, so one push is one serialization
- * either way.
+ * strangers without a password (docs/radio-protocol.md §8.2). A broadcast
+ * is one serialization; each sink then notifies only its own central.
  *
  * The host task owns the callbacks; the board loop owns the core. Only
  * pump() crosses that line, in both directions: it registers and releases
@@ -147,6 +147,7 @@ class BleSink : public NimBLEServerCallbacks,
     rx_char_ = svc->createCharacteristic(
         kNusWriteCharUUID, NIMBLE_PROPERTY::WRITE | NIMBLE_PROPERTY::WRITE_NR);
     rx_char_->setCallbacks(this);
+    tx_char_->setCallbacks(this);  // onSubscribe: who has enabled notifications
     svc->start();
     server_->getAdvertising()->addServiceUUID(kNusServiceUUID);
   }
@@ -175,7 +176,13 @@ class BleSink : public NimBLEServerCallbacks,
     if (c != NULL) c->pending_disconnect = true;
   }
 
-  // NimBLECharacteristicCallbacks (1.4.x signature)
+  // NimBLECharacteristicCallbacks (1.4.x signatures)
+  void onSubscribe(NimBLECharacteristic* ch, ble_gap_conn_desc* desc,
+                   uint16_t sub_value) override {
+    (void)ch;
+    Connection* c = desc == NULL ? NULL : find(desc->conn_handle);
+    if (c != NULL) c->subscribed = sub_value != 0;
+  }
   void onWrite(NimBLECharacteristic* ch, ble_gap_conn_desc* desc) override {
     Connection* c = desc == NULL ? NULL : find(desc->conn_handle);
     if (c == NULL) return;  // a link we have already dropped
@@ -191,8 +198,12 @@ class BleSink : public NimBLEServerCallbacks,
     NimBLEDevice::setDeviceName(name);
     // The name has to go into the advertising payload too, not only into
     // the GAP database, or a scanner that has never connected never sees it.
-    server_->getAdvertising()->setName(name);
-    server_->getAdvertising()->start();
+    // Stopped first: start() returns early while advertising is active,
+    // without rebuilding the payload the new name just invalidated.
+    NimBLEAdvertising* adv = server_->getAdvertising();
+    adv->setName(name);
+    adv->stop();
+    adv->start();
   }
 
   /** Give the link a bounded chance to carry what is already queued, before
@@ -239,6 +250,11 @@ class BleSink : public NimBLEServerCallbacks,
           continue;
         }
         c.registered = true;
+        // The controller stops advertising once a central connects, so the
+        // second and third are only reachable if it is started again. It is
+        // a no-op while already advertising, and refuses at the connection
+        // limit on its own.
+        server_->getAdvertising()->start();
       }
       // Bounded per tick, like every other transport: a chatty central
       // must not be able to own the loop (FRAME_MAX_DRAIN_BYTES_PER_PUMP).
@@ -259,34 +275,61 @@ class BleSink : public NimBLEServerCallbacks,
   /** One connected central: the connection, and therefore the sink. */
   class Connection : public IFrameSink {
    public:
-    // Chunk at the BLE-default MTU (23 - 3 = 20) so it works before MTU
-    // exchange; NimBLE splits per connection otherwise. Every attached
-    // central gets every frame.
+    // Notified to THIS central only, through the host API rather than
+    // NimBLECharacteristic::notify(): that one sends to every subscribed
+    // central, so a response would reach the connections it was never for
+    // (and past their auth gate), and a broadcast would arrive once per sink.
+    // Chunked at what the link negotiated (23 - 3 = 20 until the MTU
+    // exchange, so it works for a client that never does it).
     void send_frame(const uint8_t* decoded, size_t len) override {
+      if (!subscribed) return;  // notifications are opt-in per central
       const size_t n = encode_wire(decoded, len);
       const uint8_t* bytes = wire();
-      size_t off = 0;
-      while (off < n) {
-        size_t chunk = min(n - off, (size_t)20);
-        notify_->notify(&bytes[off], chunk);
+      const uint16_t mtu = server_->getPeerMTU(handle);
+      const size_t max_chunk = mtu > 23 ? mtu - 3 : 20;
+      for (size_t off = 0; off < n;) {
+        size_t chunk = n - off < max_chunk ? n - off : max_chunk;
+        if (!notify_chunk(&bytes[off], chunk)) return;  // frame abandoned
         off += chunk;
       }
     }
 
-    NimBLECharacteristic* notify_ = NULL;  // the shared NUS TX char
+    NimBLEServer* server_ = NULL;
+    uint16_t tx_handle = 0;  // attribute handle of the shared NUS TX char
     uint16_t handle = 0;
     // Who may write what, in a port with two tasks. The host task owns
-    // `handle`, `notify_` and the two flags it sets (in_use,
-    // pending_disconnect) plus the FIFO's head; the board loop owns
-    // `registered` (the sink registry), the reader, the frame buffer and the
-    // FIFO's tail. Nothing else crosses between them, and each field has
-    // exactly one writer.
+    // `handle`, `server_`, `tx_handle` and the flags it sets (in_use,
+    // subscribed, pending_disconnect) plus the FIFO's head; the board loop
+    // owns `registered` (the sink registry), the reader, the frame buffer
+    // and the FIFO's tail. Each field has exactly one writer.
     volatile bool in_use = false;
+    volatile bool subscribed = false;
     volatile bool registered = false;
     volatile bool pending_disconnect = false;
     RxFifo<kRxFifoBytes> rx;
     FrameReader reader;
     uint8_t frame[FRAME_MAX_DECODED];
+
+   private:
+    // How long a chunk waits for the host to have buffer room, mirroring the
+    // nRF52 sink: a burst (FetchPackets) outruns the radio link, and a
+    // central that stopped reading must cost dropped frames, never a wedged
+    // board loop.
+    static const uint32_t kNotifyWaitMs = 50;
+
+    bool notify_chunk(const uint8_t* bytes, size_t len) {
+      for (uint32_t waited = 0; waited <= kNotifyWaitMs; waited++) {
+        os_mbuf* om = ble_hs_mbuf_from_flat(bytes, len);
+        // The host consumes `om` whatever the outcome. Only a full buffer
+        // pool is worth waiting out; anything else means the link is gone.
+        int rc = om == NULL ? BLE_HS_ENOMEM
+                            : ble_gatts_notify_custom(handle, tx_handle, om);
+        if (rc == 0) return true;
+        if (rc != BLE_HS_ENOMEM) return false;
+        delay(1);
+      }
+      return false;
+    }
   };
 
   Connection* find(uint16_t handle) {
@@ -308,7 +351,9 @@ class BleSink : public NimBLEServerCallbacks,
       conns_[i].in_use = true;
       conns_[i].pending_disconnect = false;
       conns_[i].authenticated = false;
-      conns_[i].notify_ = tx_char_;
+      conns_[i].subscribed = false;
+      conns_[i].server_ = server_;
+      conns_[i].tx_handle = tx_char_->getHandle();
       conns_[i].rx.clear();
       conns_[i].reader.reset();
       return &conns_[i];
@@ -363,7 +408,6 @@ class BleSink : public IFrameSink {
     bleuart.begin();
     Bluefruit.Advertising.addFlags(BLE_GAP_ADV_FLAGS_LE_ONLY_GENERAL_DISC_MODE);
     Bluefruit.Advertising.addService(bleuart);
-    Bluefruit.ScanResponse.addName();
     Bluefruit.Advertising.setInterval(kAdvIntervalMin, kAdvIntervalMax);
     Bluefruit.Advertising.setFastTimeout(kAdvFastTimeout);
     Bluefruit.Advertising.restartOnDisconnect(true);
@@ -372,18 +416,23 @@ class BleSink : public IFrameSink {
   /** Board loop: drain BLE RX into frames, then the TX queue into
    *  notifications. */
   void pump() {
-    drain_frames(*proc_, reader_, frame_, this, bleuart);
     if (drop_pending_) {
       // The link went away. Everything queued was for the central that just
       // left, and so was the session it authenticated: a session must not
       // outlive the link it was authenticated on, or whoever connects next
       // starts inside the gate. The ESP32 twin gets this for free by giving
-      // every central its own sink; with one static sink it is ours to do.
+      // every central its own sink; with one static sink it is ours to do —
+      // and before anything is drained, so bytes the next central has
+      // already sent are never read under the last one's session. What the
+      // old central left half-written in the FIFO or the reader goes with it.
       drop_pending_ = false;
       head_ = 0;
       count_ = 0;
       authenticated = false;
+      bleuart.flush();  // discard unread RX bytes
+      reader_.reset();
     }
+    drain_frames(*proc_, reader_, frame_, this, bleuart);
     drain_step();
   }
 
@@ -409,6 +458,13 @@ class BleSink : public IFrameSink {
    *  unaffected; scanners see the new name at the next advertising round. */
   void set_name(const char* name) {
     Bluefruit.setName(name);
+    // The scan response holds a COPY of the name taken when addName() runs,
+    // so it has to be rebuilt here or the advertised name stays whatever the
+    // BSP started with. Stopped first because the payload is only read when
+    // advertising starts.
+    Bluefruit.Advertising.stop();
+    Bluefruit.ScanResponse.clearData();
+    Bluefruit.ScanResponse.addName();
     Bluefruit.Advertising.start(0);
   }
 

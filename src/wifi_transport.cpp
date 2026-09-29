@@ -4,18 +4,44 @@
 
 #include <ESPmDNS.h>
 
+#include <errno.h>
 #include <stdio.h>
 #include <string.h>
+
+#include <lwip/sockets.h>
 
 namespace meshpigeon {
 
 static const uint32_t kBackoffStartMs = 5000;
 static const uint32_t kBackoffMaxMs = 120000;
+// How long one frame may wait for a peer to make room in its receive window.
+static const uint32_t kWriteBudgetMs = 250;
 
 void WifiTransport::Client::send_frame(const uint8_t* decoded, size_t len) {
   const size_t n = encode_wire(decoded, len);
-  if (n == 0 || client.write(wire(), n) != n) {
-    // The socket is gone or its buffer is full. Flag it: a dropped frame
+  const uint8_t* bytes = wire();
+  // Not WiFiClient::write(): it blocks the caller for up to 10 s (ten
+  // one-second selects) on a peer whose receive window is full, and the
+  // caller is the board loop. Any LAN peer can get there unauthenticated —
+  // open a socket, send Pings, never read — and the radio stops being
+  // polled for that long. Write without blocking and give the peer a short,
+  // fixed budget to make room, which a reader that is merely slow (a
+  // FetchPackets burst outrunning the link) does within a few ms.
+  size_t sent = 0;
+  const uint32_t start = millis();
+  while (sent < n) {
+    const int r = ::send(client.fd(), bytes + sent, n - sent, MSG_DONTWAIT);
+    if (r > 0) {
+      sent += (size_t)r;
+    } else if ((r < 0 && errno != EAGAIN && errno != EWOULDBLOCK) ||
+               millis() - start >= kWriteBudgetMs) {
+      break;
+    } else {
+      delay(1);  // window full: let lwip's task run and drain it
+    }
+  }
+  if (sent != n) {
+    // The socket is gone or its buffer stayed full. Flag it: a dropped frame
     // mid-stream (say, half a FetchPackets burst) would otherwise leave the
     // client believing it received the whole thing, terminated by FetchEnd.
     // The board loop closes the socket on the next pump, so the client sees
@@ -160,6 +186,15 @@ void WifiTransport::accept_clients() {
       c.stop();
       return;
     }
+    // A peer that vanishes without a FIN (walked out of range, powered off)
+    // would otherwise hold one of the four slots until a write finally fails,
+    // which on a quiet mesh is never. Keepalive probes make lwip notice: ~60 s
+    // to a closed socket, which connected() then reports.
+    const int on = 1, idle = 30, interval = 10, count = 3;
+    setsockopt(c.fd(), SOL_SOCKET, SO_KEEPALIVE, &on, sizeof(on));
+    setsockopt(c.fd(), IPPROTO_TCP, TCP_KEEPIDLE, &idle, sizeof(idle));
+    setsockopt(c.fd(), IPPROTO_TCP, TCP_KEEPINTVL, &interval, sizeof(interval));
+    setsockopt(c.fd(), IPPROTO_TCP, TCP_KEEPCNT, &count, sizeof(count));
     clients_[i].client.stop();
     clients_[i].client = c;
     clients_[i].reader.reset();

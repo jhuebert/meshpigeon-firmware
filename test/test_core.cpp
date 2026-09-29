@@ -1877,6 +1877,30 @@ void test_empty_pin_restores_the_factory_default() {
   TEST_ASSERT_TRUE(loaded.pin_is_default());
 }
 
+void test_a_shorter_pin_replaces_a_longer_one_entirely() {
+  // set_pin() copies `len` bytes without the terminator, so the tail of a
+  // longer PIN must not survive underneath the shorter one.
+  lock_with_pin("12345678");
+  ClientToRadioMessage req = request(2);
+  req.which_body = kOpSetDeviceSettings;
+  req.body.set_device_settings.has_pin = true;
+  set_str(req.body.set_device_settings.pin,
+          sizeof(req.body.set_device_settings.pin), "4321");
+  send(req, sink);
+  TEST_ASSERT_EQUAL_STRING("4321", proc->device_settings().pin);
+
+  // ...and a fresh connection cannot get in with the stale longer PIN.
+  RecordingSink other;
+  proc->add_sink(&other);
+  ClientToRadioMessage auth = request(3);
+  auth.which_body = kOpAuth;
+  set_str(auth.body.auth.pin, sizeof(auth.body.auth.pin), "43215678");
+  send(auth, &other);
+  TEST_ASSERT_EQUAL(meshpigeon_Error_ErrorCode_ERROR_CODE_AUTH_REQUIRED,
+                    other.at(0).error());
+  proc->remove_sink(&other);
+}
+
 void test_rx_push_reaches_only_authorized_clients() {
   // FetchPackets is auth-gated, so the live push of the very same raw bytes
   // has to be gated the same way: an unauthenticated socket that merely
@@ -2110,6 +2134,7 @@ void test_auth_gate() {
       {kOpPurgeStore, "purge_store"},
       {kOpReboot, "reboot"},
       {kOpFactoryReset, "factory_reset"},
+      {kOpBootloader, "bootloader"},
   };
   for (size_t i = 0; i < sizeof(gated) / sizeof(gated[0]); i++) {
     client.clear();
@@ -2121,7 +2146,7 @@ void test_auth_gate() {
         gated[i].what);
   }
 
-  // exempt: ping, device info, status, bootloader, and auth itself
+  // exempt: ping, device info, status, and auth itself
   client.clear();
   ClientToRadioMessage ping = request(50);
   ping.which_body = kOpPing;
@@ -2138,11 +2163,6 @@ void test_auth_gate() {
   status.which_body = kOpGetStatus;
   send(status, &client);
   TEST_ASSERT_EQUAL(meshpigeon_RadioToClient_status_tag, client.at(0).which());
-  client.clear();
-  ClientToRadioMessage boot = request(53);
-  boot.which_body = kOpBootloader;
-  send(boot, &client);
-  TEST_ASSERT_EQUAL(meshpigeon_RadioToClient_ok_tag, client.at(0).which());
 
   // wrong PIN: rejected
   client.clear();
@@ -2484,6 +2504,7 @@ int main() {
   RUN_TEST(test_set_device_settings_capability_gate);
   RUN_TEST(test_empty_pin_restores_the_factory_default);
   RUN_TEST(test_writing_a_pin_authorizes_the_writer);
+  RUN_TEST(test_a_shorter_pin_replaces_a_longer_one_entirely);
   RUN_TEST(test_max_length_strings_survive_the_wire);
   RUN_TEST(test_device_settings_push_reaches_only_authorized_clients);
   RUN_TEST(test_a_settings_write_that_changes_nothing_is_a_no_op);
