@@ -118,7 +118,13 @@ See [docs/radio-protocol.md](docs/radio-protocol.md).
 - [ ] A custom PIN gates the node, and `Auth` unlocks one connection only.
 - [ ] Rotating the PIN locks every other connection out again.
 - [ ] With a PIN set, an unauthenticated connection sees no live packet
-      pushes and no device-settings pushes (and does on the default PIN).
+      pushes, no device-settings pushes and no re-tune pushes (and does on
+      the default PIN).
+- [ ] BLE carries a request while packets arrive off the air and a send
+      completes — no garbled or duplicated frame on any transport. (A BLE
+      callback runs on NimBLE's own task; everything core-facing happens in
+      the board loop.)
+- [ ] `Reboot` / `FactoryReset` answer `Ok` *before* the board goes down.
 - [ ] 3 concurrent BLE clients can fetch history simultaneously.
 - [ ] Coexists with MeshCore repeaters on-air.
 
