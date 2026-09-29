@@ -32,9 +32,11 @@ class UsbCdcSink : public IFrameSink {
     Serial.flush();
   }
 
-  /** Board loop: drain incoming bytes into frames. */
+  /** Board loop: drain incoming bytes into frames, bounded per tick so one
+   *  chatty client cannot own the loop (FRAME_MAX_DRAIN_BYTES_PER_PUMP). */
   void pump() {
-    while (Serial.available() > 0) {
+    uint32_t budget = FRAME_MAX_DRAIN_BYTES_PER_PUMP;
+    while (budget-- > 0 && Serial.available() > 0) {
       size_t res = reader_.feed((uint8_t)Serial.read(), frame_);
       if (res != 0 && res != (size_t)-1) {
         proc_->on_envelope(frame_, res, this);
@@ -214,9 +216,12 @@ class BleSink : public IFrameSink {
     Bluefruit.Advertising.start(0);
   }
 
-  /** Board loop: drain BLE RX into frames, then TX queue into notifications. */
+  /** Board loop: drain BLE RX into frames, then TX queue into notifications.
+   *  The RX drain is bounded per tick (FRAME_MAX_DRAIN_BYTES_PER_PUMP) so a
+   *  chatty central cannot own the loop. */
   void pump() {
-    while (bleuart.available() > 0) {
+    uint32_t budget = FRAME_MAX_DRAIN_BYTES_PER_PUMP;
+    while (budget-- > 0 && bleuart.available() > 0) {
       size_t res = reader_.feed((uint8_t)bleuart.read(), frame_);
       if (res != 0 && res != (size_t)-1) {
         proc_->on_envelope(frame_, res, this);

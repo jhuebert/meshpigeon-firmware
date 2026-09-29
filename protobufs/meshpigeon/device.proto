@@ -160,7 +160,9 @@ message DeviceSettings {
 // applies live; the response carries the full post-write DeviceSettings, and
 // other connected clients receive an async DeviceSettingsChanged.
 message SetDeviceSettings {
-  // 0..20 bytes. Empty string resets to the derived default name.
+  // 0..20 bytes, no control characters (the name is advertised verbatim
+  // over BLE, a length-constrained UTF-8 field). Empty string resets to the
+  // derived default name. Bytes >= 0x80 are allowed, so non-ASCII names work.
   optional string name = 1;
 
   // 4..8 ASCII digits. The device ALWAYS has a PIN: it ships with the

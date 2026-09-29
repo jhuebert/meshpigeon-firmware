@@ -91,7 +91,16 @@ struct DeviceSettings {
   /** One field of a SetDeviceSettings request, validated against the rules
    *  in docs/radio-protocol.md §8.1. Rejects the whole request atomically on any failure. */
   static bool valid_name(const char* s, size_t len) {
-    return s != NULL && len <= MESHPIGEON_NAME_MAX;
+    if (s == NULL || len > MESHPIGEON_NAME_MAX) return false;
+    // Printable only. The name goes straight into the BLE advertising
+    // payload, a length-constrained UTF-8 field, so control bytes would put
+    // bytes in it that no scanner should have to render. Bytes >= 0x80 are
+    // left alone, so a non-ASCII name still works.
+    for (size_t i = 0; i < len; i++) {
+      const unsigned char c = (unsigned char)s[i];
+      if (c < 0x20 || c == 0x7F) return false;
+    }
+    return true;
   }
   /** A PIN *value* is 4..8 ASCII digits. */
   static bool valid_pin(const char* s, size_t len) {

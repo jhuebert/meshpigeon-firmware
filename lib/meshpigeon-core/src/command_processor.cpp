@@ -76,7 +76,7 @@ bool CommandProcessor::boot() {
   //
   // A failed load leaves the safe default in place and does NOT persist it
   // (avoid flash wear until an app tunes us); a later apply() is what writes.
-  RadioSettings stored;
+  RadioSettings stored = RadioSettings::unset();
   settings_ = RadioSettings::unset();
   if (settings_store_.load(&stored)) settings_ = stored;
   // A false load means "never written": the store hands back the defaults.
@@ -112,6 +112,11 @@ static size_t encode_envelope(uint8_t* out, size_t cap,
 // ---- response delivery ------------------------------------------------------
 
 void CommandProcessor::begin_response(uint32_t id) {
+  // The ONE place a response is reset. Every builder below assumes it: it
+  // zeroes the whole envelope, union included, so a field a builder (or a
+  // board hook) does not set reads as "unset" instead of as whatever the
+  // previous response left behind. Any new builder that skips this inherits
+  // the previous response's fields — see AGENTS.md §6.
   response_ = RadioToClientMessage_init_zero;
   response_.id = id;  // 0 marks an async push
 }
@@ -146,13 +151,8 @@ void CommandProcessor::broadcast_response(IFrameSink* except,
 }
 
 void CommandProcessor::build_radio_settings() {
+  // begin_response() has already zeroed the body; see its comment.
   response_.which_body = meshpigeon_RadioToClient_radio_settings_tag;
-  // response_.body is a union: start from a zeroed message so a field this
-  // builder does not set cannot inherit the previous response's value.
-  // (A local, not `body.x = {...}`: the xtensa toolchain rejects assigning a
-  // brace initializer even though gcc and arm-none-eabi accept it.)
-  const RadioSettingsMessage empty = RadioSettingsMessage_init_zero;
-  response_.body.radio_settings = empty;
   RadioSettingsMessage& m = response_.body.radio_settings;
   m.freq_hz = settings_.freq_hz;
   // bw_x100khz is in 0.01 kHz units, i.e. 10 Hz steps.
@@ -165,8 +165,6 @@ void CommandProcessor::build_radio_settings() {
 
 void CommandProcessor::build_device_settings() {
   response_.which_body = meshpigeon_RadioToClient_device_settings_tag;
-  const DeviceSettingsMessage empty = DeviceSettingsMessage_init_zero;
-  response_.body.device_settings = empty;
   DeviceSettingsMessage& m = response_.body.device_settings;
   build_name(device_, m.name);
   m.wifi_enabled = device_.wifi_enabled;
@@ -182,11 +180,6 @@ void CommandProcessor::build_device_settings() {
 
 void CommandProcessor::build_status() {
   response_.which_body = meshpigeon_RadioToClient_status_tag;
-  // Zeroed first, so a hook that only fills the fields it knows about (a
-  // board with no Wi-Fi, say) leaves the rest reading as "unknown" instead
-  // of as the previous Status's values.
-  const StatusMessage empty = StatusMessage_init_zero;
-  response_.body.status = empty;
   StatusMessage& m = response_.body.status;
   // The hook owns the link state; the client counts are the core's, because
   // the sinks it broadcasts to are the core's registry.
@@ -381,9 +374,15 @@ void CommandProcessor::handle_request(const ClientToRadioMessage& req,
       // Plain Hz on the wire, 0.01 kHz units internally (10 Hz steps). The
       // conversion has to be validated on the wire value, not the truncated
       // one: a bandwidth of 655370 Hz would otherwise wrap to 10 Hz.
+      // power_dbm is bounded to the silicon's ceiling because the value is
+      // narrowed to int8_t on its way to the radio: anything above 127 would
+      // arrive negative (200 -> -56 dBm) and key up at the wrong power
+      // instead of failing. Validating it here is the only place that can
+      // still reject it.
       if (m.bandwidth_hz == 0 || m.bandwidth_hz % 10 != 0 ||
           m.bandwidth_hz / 10 > UINT16_MAX || m.freq_hz == 0 || m.sf < 5 ||
-          m.sf > 12 || m.cr < 5 || m.cr > 8 || m.power_dbm > UINT8_MAX) {
+          m.sf > 12 || m.cr < 5 || m.cr > 8 ||
+          m.power_dbm > MESHPIGEON_TX_POWER_MAX) {
         send_error(req.id, meshpigeon_Error_ErrorCode_ERROR_CODE_BAD_PAYLOAD,
                    from);
         return;

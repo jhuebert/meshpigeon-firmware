@@ -146,7 +146,9 @@ typedef struct _meshpigeon_DeviceSettings {
  applies live; the response carries the full post-write DeviceSettings, and
  other connected clients receive an async DeviceSettingsChanged. */
 typedef struct _meshpigeon_SetDeviceSettings {
-    /* 0..20 bytes. Empty string resets to the derived default name. */
+    /* 0..20 bytes, no control characters (the name is advertised verbatim
+ over BLE, a length-constrained UTF-8 field). Empty string resets to the
+ derived default name. Bytes >= 0x80 are allowed, so non-ASCII names work. */
     bool has_name;
     char name[21];
     /* 4..8 ASCII digits. The device ALWAYS has a PIN: it ships with the

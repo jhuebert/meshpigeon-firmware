@@ -40,7 +40,8 @@ typedef struct _meshpigeon_RadioSettings {
     uint32_t sf;
     /* Coding rate denominator: 5..8 means 4/5 .. 4/8. */
     uint32_t cr;
-    /* TX power in dBm. */
+    /* TX power in dBm, 0..22 (the SX1262/LR1110 ceiling; anything above is
+ rejected rather than truncated). */
     uint32_t power_dbm;
     /* Bumped by the firmware (+1) on every accepted change; ignored in
  SetRadioSettings requests. Lets clients detect concurrent retunes. */

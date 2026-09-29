@@ -72,9 +72,20 @@ void WifiTransport::apply(const DeviceSettings& settings) {
 }
 
 void WifiTransport::connect_start() {
-  if (state_ == State::OFF) set_state(State::CONNECTING);
+  // Unconditional: a credential change while CONNECTED (or while backing off
+  // from AUTH_FAIL/ERROR) is still a transition, and the documented Status
+  // push fires on transitions. set_state() is a no-op when the state already
+  // matches, so this cannot cause push churn.
+  set_state(State::CONNECTING);
   WiFi.mode(WIFI_STA);
   WiFi.setSleep(false);  // the radio is the point; don't nap the link
+  // The Arduino core's own auto-reconnect fires on a timer for reasons it
+  // calls reconnectable (NO_AP_FOUND, ASSOC_FAIL, HANDSHAKE_TIMEOUT, ...),
+  // which would reconnect immediately and make the ladder below irrelevant —
+  // an AP outage would become a tight reconnect loop instead of the
+  // documented 5 s -> 2 min backoff. This transport is the only retry
+  // authority (docs/radio-protocol.md §7).
+  WiFi.setAutoReconnect(false);
   WiFi.begin(settings_.wifi_ssid, settings_.wifi_password);
   last_attempt_ms_ = millis();
   // A fresh attempt ladder: 5 s, doubling to the 2 min cap. Seeding this
@@ -153,10 +164,16 @@ void WifiTransport::accept_clients() {
 }
 
 void WifiTransport::pump_clients() {
+  // The per-socket drain is bounded per tick
+  // (FRAME_MAX_DRAIN_BYTES_PER_PUMP): a socket that keeps itself fed must
+  // not be able to hold the board loop, and `Ping` is auth-exempt, so an
+  // unauthenticated peer can be answered indefinitely. The budget is per
+  // socket, so one flooder cannot starve the others.
   for (size_t i = 0; i < kMaxClients; i++) {
     Client& c = clients_[i];
     if (!c.in_use) continue;
-    while (!c.broken && c.client.available() > 0) {
+    uint32_t budget = FRAME_MAX_DRAIN_BYTES_PER_PUMP;
+    while (!c.broken && budget-- > 0 && c.client.available() > 0) {
       size_t res = c.reader.feed((uint8_t)c.client.read(), c.frame);
       if (res != 0 && res != (size_t)-1) {
         proc_->on_envelope(c.frame, res, &c);
@@ -181,19 +198,21 @@ void WifiTransport::pump() {
   // A disabled or unconfigured link closes everything it opened; apply() has
   // already done that, so there is nothing left to drive (docs §7).
   if (!usable()) return;
-  if (state_ == State::CONNECTED) {
-    if (WiFi.status() != WL_CONNECTED) {
-      stop_server();
-      set_state(State::CONNECTING);
-      // The link dropped: start the attempt ladder over, from the documented
-      // 5 s floor, so the retry loop below backs off instead of spinning.
-      last_attempt_ms_ = millis();
-      backoff_ms_ = kBackoffStartMs;
-    }
-  }
-  if (state_ == State::CONNECTING || state_ == State::AUTH_FAIL ||
-      state_ == State::ERROR) {
-    wl_status_t st = WiFi.status();
+  // Exactly ONE status() read per tick. WiFiSTAClass::status() is
+  // xEventGroupClearBits(), so reading it consumes the one-shot disconnect
+  // reason; a second read in the same tick would swallow the very event this
+  // state machine exists to classify (a wrong password's WL_CONNECT_FAILED
+  // would be discarded and the app would see CONNECTING for a cycle).
+  const wl_status_t st = WiFi.status();
+  if (state_ == State::CONNECTED && st != WL_CONNECTED) {
+    stop_server();
+    set_state(State::CONNECTING);
+    // The link dropped: start the attempt ladder over, from the documented
+    // 5 s floor, so the retry loop below backs off instead of spinning.
+    last_attempt_ms_ = millis();
+    backoff_ms_ = kBackoffStartMs;
+  } else if (state_ == State::CONNECTING || state_ == State::AUTH_FAIL ||
+             state_ == State::ERROR) {
     if (st == WL_CONNECTED) {
       if (!server_up_) start_server();
       backoff_ms_ = 0;

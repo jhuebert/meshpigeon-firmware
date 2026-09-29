@@ -55,9 +55,14 @@ wire frame   :=  COBS( envelope ‖ crc16 )  0x00
   envelope, appended little-endian *before* the COBS pass.
 - A frame with a bad CRC or a malformed COBS body is dropped silently; the
   next frame in the stream decodes normally.
-- The receiver hands the decoded envelope (CRC verified and stripped) to the
-  command processor. A maximum-size frame payload is **512 bytes**; a raw
-  on-air packet is ≤ **255 bytes** (the Semtech SX12xx silicon cap).
+- **The receiver hands the decoded envelope (CRC verified and stripped) to the
+  command processor.** A maximum-size frame payload is **512 bytes**; a raw
+  on-air packet is ≤ **255 bytes** (the Semtech SX12xx silicon cap). The 512
+  is an exact boundary, not headroom: the largest legal envelope — a `Pong`
+  echoing a 500-byte `Ping` with a 5-byte varint id — is exactly 512 bytes,
+  and response encoding uses the same cap. A future change that grows an
+  envelope past it makes the answer vanish with no error the client can see,
+  so `test_max_size_pong_still_fits_the_frame` pins the edge.
 
 Since v2 there is no `[cmd][nonce][status]` frame header. Correlation, the
 operation and the error code all live *inside* the envelope:
@@ -171,13 +176,17 @@ tunes what it is told.
   async `RadioSettings` push, then the issuer gets the post-bump settings as
   its response.
 - Out-of-range values (zero frequency/bandwidth, a bandwidth that is not a
-  whole 10 Hz step, SF or CR out of range) are rejected with
-  `ERROR_CODE_BAD_PAYLOAD`; a radio that refuses the applied settings answers
-  `ERROR_CODE_TX_FAILED` and keeps the previous tuning, persisted and in
-  force — so the device stays fully usable, and only that request fails.
-  `bandwidth_hz` is checked *before* it is converted to the internal
-  0.01 kHz unit, so an out-of-range value can never wrap into a valid-looking
-  one.
+  whole 10 Hz step, SF or CR out of range, TX power above **22 dBm**) are
+  rejected with `ERROR_CODE_BAD_PAYLOAD`; a radio that refuses the applied
+  settings answers `ERROR_CODE_TX_FAILED` and keeps the previous tuning,
+  persisted and in force — so the device stays fully usable, and only that
+  request fails. `bandwidth_hz` is checked *before* it is converted to the
+  internal 0.01 kHz unit, so an out-of-range value can never wrap into a
+  valid-looking one. `power_dbm` is bounded for the same reason: the value
+  reaches the radio as an `int8_t`, so an unbounded `uint32` would not just
+  be out of range — 200 would arrive as **−56 dBm** and the board would key
+  up quietly at the wrong power instead of failing. Frequency is only
+  checked for non-zero: channel legality is the app's call (§6).
 - **Persistence is best-effort.** A flash write that fails is not reported
   (there is no error code for it, and NVS cannot report one reliably); the
   setting is applied in RAM and the response reflects that. The radio tuning
@@ -199,11 +208,17 @@ decision and last-writer-wins is self-healing.
 - **Lifecycle.** Station mode only, one network, DHCP, applied from the
   device settings. Enable → connect; disable → disconnect and close the
   server; credential change while enabled → reconnect. The TCP port can
-  change while up, which rebinds the listener. A pigeon with Wi-Fi enabled
-  comes back on the network after a reboot with no app attached.
+  change while up, which rebinds the listener and drops the sockets that
+  were on the old port (a client reconnects and resumes from its cursor). A
+  pigeon with Wi-Fi enabled comes back on the network after a reboot with no
+  app attached.
 - **Backoff.** Retries run on an exponential backoff — 5 s doubling to a
-  2 min cap, forever. A wrong password is not fatal: it surfaces as
-  `WIFI_STATE_AUTH_FAIL` in `Status`, and the user may have rotated the
+  2 min cap, forever — and the firmware is the *only* retry authority: the
+  Arduino core's own auto-reconnect is disabled, because it fires immediately
+  on the reasons it considers reconnectable (`NO_AP_FOUND`, `ASSOC_FAIL`,
+  `HANDSHAKE_TIMEOUT`, …) and would turn an AP outage into a tight reconnect
+  loop regardless of this ladder. A wrong password is not fatal: it surfaces
+  as `WIFI_STATE_AUTH_FAIL` in `Status`, and the user may have rotated the
   password. No "disable after N failures" policy exists.
 - **Multi-client TCP**, exactly like the ESP32 BLE sink: one frame reader and
   one sink per socket, broadcast to all of them. The sink registry holds **6
@@ -234,7 +249,9 @@ it set.
   the whole request with `ERROR_CODE_BAD_PAYLOAD` and **nothing** is applied.
   Partial application invites "which half saved?" UI bugs, and we never want
   a user to believe a setting took when the board can never honor it.
-- **Validated.** name ≤ 20 bytes; PIN 4–8 ASCII digits, or the empty string
+- **Validated.** name ≤ 20 bytes and free of control characters (it is
+  advertised verbatim over BLE; bytes ≥ 0x80 are fine, so a non-ASCII name
+  works); PIN 4–8 ASCII digits, or the empty string
   to restore the factory default (absent = unchanged); SSID ≤ 32; password
   ≤ 63 (the WPA2/3 limit); port ≠ 0. Every limit is the exact cap in the
   `*.options` files, NUL terminator included — a value at the limit
@@ -334,17 +351,27 @@ packet larger than the whole pool is dropped and counted in `dropped`.
   seq it could never fetch again.
 - `FetchPackets` streams every retained entry with `seq > since_seq`, oldest
   first, up to `max_count`, then `FetchEnd` with the delivered count. The
-  firmware clamps `max_count` to one request's worth of entries (a stream is
+  firmware clamps `max_count` to **64 entries per request** (a stream is
   written straight out of the sink inside one handler call, and a board has
   to stay responsive), so `FetchEnd` can come back shorter than asked for:
   re-issue with `since_seq` = the last seq received. `since_seq` cursors stay
   valid across wraps and purges because sequence numbers are monotonic and
   eviction only removes from the oldest end.
+- **Board-loop budget.** A transport also decodes at most **16 maximum-size
+  frames' worth of bytes per board-loop tick**
+  (`FRAME_MAX_DRAIN_BYTES_PER_PUMP`). Without that cap, a client that keeps
+  its inbound buffer fed hands the whole loop to itself and the radio stops
+  being polled — `Ping` is exempt from the auth gate, so this is reachable
+  unauthenticated. The budget is in **bytes, not frames**, because a peer
+  streaming pure garbage never completes a frame and a frame counter would
+  never advance. It is a throughput ceiling no real client reaches, not a
+  rate limit to design around.
 - `PurgeStore` clears history only. `FactoryReset` clears the stored device
   settings **and** history, then reboots: "as it shipped". The record is
   deleted rather than overwritten with defaults, so the next boot reads
   "never written" and falls back itself. The radio tuning and the boot count
-  survive a factory reset.
+  survive a factory reset. `StoreInfo.dropped` also survives a purge: it is
+  a device-lifetime health counter, not part of the history being cleared.
 
 ## 11. What is persisted
 

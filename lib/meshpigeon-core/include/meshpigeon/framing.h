@@ -30,6 +30,22 @@ namespace meshpigeon {
 // COBS worst case adds one overhead byte per 254 plus terminator.
 #define FRAME_MAX_WIRE (FRAME_MAX_DECODED + (FRAME_MAX_DECODED + 253) / 254 + 1)
 
+// How many frames' worth of bytes one board-loop pump may decode and
+// dispatch. A transport that drains its inbound buffer with an unbounded
+// `while (available())` hands the whole loop to whoever is fastest at
+// writing: `Ping` is exempt from the auth gate and is answered every time,
+// so a single attached client — or a LAN peer that only opened a socket —
+// can keep the radio from ever being polled.
+//
+// This is a BYTE budget, not a frame count, and that is the point: a peer
+// streaming pure garbage never completes a frame, so a frame counter would
+// never advance and the read loop would still run forever. Expressed in
+// maximum-size frames (a frame is at most FRAME_MAX_WIRE bytes), 16 of them
+// per ~1 ms tick is far above what a radio interface actually needs.
+#define FRAME_MAX_DRAIN_PER_PUMP 16
+#define FRAME_MAX_DRAIN_BYTES_PER_PUMP \
+  (FRAME_MAX_DRAIN_PER_PUMP * FRAME_MAX_WIRE)
+
 size_t crc16_ccitt(uint16_t* crc_out, const uint8_t* data, size_t len,
                    uint16_t init = 0xFFFF);
 

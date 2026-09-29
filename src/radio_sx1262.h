@@ -1,23 +1,34 @@
 #ifndef MESHPIGEON_RADIO_SX1262_H
 #define MESHPIGEON_RADIO_SX1262_H
 
-#include <RadioLib.h>
 #include <SPI.h>
 
-#include "meshpigeon/command_processor.h"
+#include "radio_lora.h"
 
 namespace meshpigeon {
 
+/** SX1262-specific facts for LoraRadioBase. */
+struct Sx126xTraits {
+  static constexpr uint32_t kIrqTxDone = RADIOLIB_SX126X_IRQ_TX_DONE;
+  static constexpr uint32_t kIrqRxDone = RADIOLIB_SX126X_IRQ_RX_DONE;
+  static constexpr uint32_t kIrqCrcErr = RADIOLIB_SX126X_IRQ_CRC_ERR;
+  static constexpr uint32_t kIrqHeaderErr = RADIOLIB_SX126X_IRQ_HEADER_ERR;
+  static constexpr uint8_t kCrcLen = 1;
+  static constexpr bool kHeaderErrQuirk = false;
+};
+
 /**
- * SX1262 (RadioLib) implementation of ILoRaRadio. TX starts asynchronously
- * and completes via tx_done() polling from the board loop; RX is polled.
- * The firmware reads/writes raw bytes only — no protocol.
+ * SX1262 (RadioLib) implementation of ILoRaRadio. Bring-up and RF-switch
+ * wiring are board work and live here; the tuning/TX/RX state machine is
+ * shared with the LR1110 through LoraRadioBase. The firmware reads/writes
+ * raw bytes only — no protocol.
  */
-class Sx1262Radio : public ILoRaRadio {
+class Sx1262Radio : public LoraRadioBase<SX1262, Sx126xTraits> {
  public:
-  Sx1262Radio() : radio_(new Module(MESHPIGEON_PIN_LORA_NSS, MESHPIGEON_PIN_LORA_DIO1,
-                                    MESHPIGEON_PIN_LORA_RST,
-                                    MESHPIGEON_PIN_LORA_BUSY)) {}
+  Sx1262Radio()
+      : LoraRadioBase<SX1262, Sx126xTraits>(
+            new Module(MESHPIGEON_PIN_LORA_NSS, MESHPIGEON_PIN_LORA_DIO1,
+                       MESHPIGEON_PIN_LORA_RST, MESHPIGEON_PIN_LORA_BUSY)) {}
 
   bool begin() override {
     float tcxo = 0.0f;
@@ -56,80 +67,6 @@ class Sx1262Radio : public ILoRaRadio {
 #endif
     return apply(last_settings_);
   }
-
-  bool apply(const RadioSettings& s) override {
-    last_settings_ = s;
-    int state = radio_.standby();
-    if (state != RADIOLIB_ERR_NONE) return false;
-    state = radio_.setFrequency((float)s.freq_hz / 1000000.0f);
-    if (state != RADIOLIB_ERR_NONE) return false;
-    state = radio_.setBandwidth((float)s.bw_x100khz / 100.0f);
-    if (state != RADIOLIB_ERR_NONE) return false;
-    state = radio_.setSpreadingFactor(s.sf);
-    if (state != RADIOLIB_ERR_NONE) return false;
-    state = radio_.setCodingRate(s.cr);
-    if (state != RADIOLIB_ERR_NONE) return false;
-    // Longer preamble for lower SF (MeshCore preambleLengthForSF)
-    state = radio_.setPreambleLength(s.sf <= 8 ? 32 : 16);
-    if (state != RADIOLIB_ERR_NONE) return false;
-    state = radio_.setOutputPower((int8_t)s.power_dbm);
-    if (state != RADIOLIB_ERR_NONE) return false;
-    state = radio_.setCRC(true);  // on-air CRC always on
-    if (state != RADIOLIB_ERR_NONE) return false;
-    return start_rx();
-  }
-
-  int transmit(const uint8_t* raw, uint8_t len) override {
-    if (tx_started_) return -1;  // already keying up
-    // stop RX so we can transmit
-    radio_.standby();
-    int state = radio_.startTransmit(const_cast<uint8_t*>(raw), len);
-    if (state != RADIOLIB_ERR_NONE) {
-      start_rx();
-      return -1;
-    }
-    tx_started_ = true;
-    return 0;
-  }
-
-  bool tx_done() override {
-    if (!tx_started_) return true;
-    if (radio_.getIrqFlags() & RADIOLIB_SX126X_IRQ_TX_DONE) {
-      radio_.finishTransmit();  // clears IRQ + returns to standby
-      tx_started_ = false;
-      start_rx();
-      return true;
-    }
-    return false;
-  }
-
-  bool receive(uint8_t* raw, uint8_t* len, int8_t* rssi, int8_t* snr) override {
-    uint16_t irq = radio_.getIrqFlags();
-    if (!(irq & RADIOLIB_SX126X_IRQ_RX_DONE)) return false;
-    bool crc_ok = !(irq & (RADIOLIB_SX126X_IRQ_CRC_ERR |
-                           RADIOLIB_SX126X_IRQ_HEADER_ERR));
-    int plen = radio_.getPacketLength(true);
-    uint8_t buf[MESHPIGEON_MAX_RAW_PACKET];
-    bool got = crc_ok && plen > 0 && plen <= MESHPIGEON_MAX_RAW_PACKET &&
-               radio_.readData(buf, plen) == RADIOLIB_ERR_NONE;  // clears IRQ
-    start_rx();
-    if (!got) return false;
-    *len = (uint8_t)plen;
-    memcpy(raw, buf, *len);
-    *rssi = (int8_t)radio_.getRSSI();
-    *snr = (int8_t)radio_.getSNR();
-    return true;
-  }
-
- private:
-  bool start_rx() {
-    int state = radio_.startReceive();
-    return state == RADIOLIB_ERR_NONE;
-  }
-
-  SX1262 radio_;
-  RadioSettings last_settings_ = RadioSettings::unset();
-  bool tx_started_ = false;
 };
 
 }  // namespace meshpigeon

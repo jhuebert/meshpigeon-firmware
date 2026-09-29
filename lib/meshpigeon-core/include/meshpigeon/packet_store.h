@@ -85,6 +85,10 @@ class PacketStore {
   uint32_t next_seq() const { return next_seq_; }
   uint32_t dropped() const { return dropped_; }
 
+  /** Forget the retained packets. Sequence numbers do NOT restart, so a
+   *  client's `since_seq` cursor stays valid; `dropped` deliberately
+   *  survives, because it is a device-lifetime health counter rather than
+   *  part of the history being cleared. */
   void clear() {
     head_off_ = 0;
     tail_off_ = 0;

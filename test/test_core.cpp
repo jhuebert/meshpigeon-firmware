@@ -589,6 +589,20 @@ void test_store_purge_resets_history() {
   TEST_ASSERT_EQUAL(0, n);
 }
 
+void test_store_dropped_survives_a_purge() {
+  // dropped is a device-lifetime health counter, not part of the history a
+  // purge clears: an operator reading StoreInfo after a PurgeStore still
+  // wants to know the ring was overflowing.
+  PacketStore s(rec_b(1) * 2);
+  uint8_t data[4] = {7};
+  s.append(0, -70, 9, 0x02, data, 1);
+  s.append(0, -70, 9, 0x02, data, 1);
+  s.append(0, -70, 9, 0x02, data, 1);  // evicts one
+  TEST_ASSERT_EQUAL(1, s.dropped());
+  s.clear();
+  TEST_ASSERT_EQUAL(1, s.dropped());
+}
+
 void test_store_randomized_matches_model() {
   // Deterministic PRNG stress: compare against a simple reference model.
   PacketStore s(100);
@@ -830,6 +844,45 @@ void test_set_radio_bad_payload() {
   TEST_ASSERT_EQUAL(meshpigeon_Error_ErrorCode_ERROR_CODE_BAD_PAYLOAD,
                     sink->at(0).error());
   TEST_ASSERT_EQUAL(12500, proc->settings().bw_x100khz);  // default kept
+}
+
+void test_set_radio_rejects_out_of_range_tx_power() {
+  // The wire field is a uint32 but the value is narrowed to int8_t on its
+  // way to the radio, so anything above the silicon's ceiling has to be
+  // rejected here: 200 would otherwise reach the radio as -56 dBm and the
+  // board would key up quietly at the wrong power instead of failing.
+  ClientToRadioMessage req = request(1);
+  req.which_body = kOpSetRadioSettings;
+  req.body.set_radio_settings.has_settings = true;
+  RadioSettingsMessage& m = req.body.set_radio_settings.settings;
+  m.freq_hz = 906875000;
+  m.bandwidth_hz = 125000;
+  m.sf = 9;
+  m.cr = 5;
+  m.power_dbm = MESHPIGEON_TX_POWER_MAX;
+  send(req, sink);
+  TEST_ASSERT_EQUAL(meshpigeon_RadioToClient_radio_settings_tag,
+                    sink->at(0).which());
+  tick(6 * 60 * 1000);  // past the first-owner window, so BUSY never masks a
+                        // payload verdict
+
+  for (uint32_t bad = MESHPIGEON_TX_POWER_MAX + 1; bad <= 255; bad += 64) {
+    sink->clear();
+    req.id = bad;
+    m.power_dbm = bad;
+    send(req, sink);
+    // Assert the variant first: without this a regression reads as an error
+    // code compared against a union that is actually a RadioSettings.
+    TEST_ASSERT_EQUAL_MESSAGE(
+        meshpigeon_RadioToClient_error_tag, sink->at(0).which(),
+        "an out-of-range power must be an error, not an accepted tuning");
+    TEST_ASSERT_EQUAL(meshpigeon_Error_ErrorCode_ERROR_CODE_BAD_PAYLOAD,
+                      sink->at(0).error());
+    // Rejected atomically: the tuning in force is untouched.
+    TEST_ASSERT_EQUAL(MESHPIGEON_TX_POWER_MAX, proc->settings().power_dbm);
+  }
+  // ...and the value that survived is one the radio sees as itself.
+  TEST_ASSERT_EQUAL(MESHPIGEON_TX_POWER_MAX, (int)(int8_t)radio->applied_.power_dbm);
 }
 
 void test_set_radio_apply_failure_is_tx_failed() {
@@ -1300,6 +1353,58 @@ static RecordingSink* lock_with_pin(const char* pin) {
   send(req, sink);
   sink->clear();
   return sink;
+}
+
+void test_max_size_pong_still_fits_the_frame() {
+  // MESHPIGEON_MAX_FRAME_PAYLOAD is not headroom: a Pong echoing a
+  // maximum-size (500 B) Ping with a 5-byte varint id encodes to exactly
+  // 512 bytes, the same cap response encoding uses. If anything grows the
+  // envelope, encode_response() returns 0 and the answer vanishes with no
+  // error the client can see — so the boundary is pinned here.
+  const uint32_t kMaxId = 0xFFFFFFFFu;
+  ClientToRadioMessage req = request(kMaxId);
+  req.which_body = kOpPing;
+  req.body.ping.payload.size = 500;
+  memset(req.body.ping.payload.bytes, 0xA5, 500);
+
+  uint8_t buf[1200];
+  pb_ostream_t o = pb_ostream_from_buffer(buf, sizeof(buf));
+  TEST_ASSERT_TRUE(pb_encode(&o, ClientToRadioMessage_fields, &req));
+  TEST_ASSERT_EQUAL(MESHPIGEON_MAX_FRAME_PAYLOAD, o.bytes_written);
+  TEST_ASSERT_EQUAL(0, sink->undecoded());
+  TEST_ASSERT_EQUAL(0, sink->count());
+
+  proc->on_envelope(buf, o.bytes_written, sink);
+  TEST_ASSERT_EQUAL(1, sink->count());  // a drop here would be silent
+  TEST_ASSERT_EQUAL(meshpigeon_RadioToClient_pong_tag, sink->at(0).which());
+  TEST_ASSERT_EQUAL(kMaxId, sink->at(0).id());
+  TEST_ASSERT_EQUAL(500, sink->at(0).m().body.pong.payload.size);
+  TEST_ASSERT_EQUAL_MEMORY(req.body.ping.payload.bytes,
+                           sink->at(0).m().body.pong.payload.bytes, 500);
+}
+
+void test_set_device_name_rejects_control_bytes() {
+  // The name is advertised verbatim over BLE, a length-constrained UTF-8
+  // field, so control bytes must be refused. Bytes >= 0x80 are fine: a
+  // non-ASCII name is a legitimate name.
+  ClientToRadioMessage req = request(1);
+  req.which_body = kOpSetDeviceSettings;
+  SetDeviceSettingsMessage& m = req.body.set_device_settings;
+  m.has_name = true;
+  memset(m.name, 0, sizeof(m.name));
+  m.name[0] = 's'; m.name[1] = 'h'; m.name[2] = 0x07; m.name[3] = 0x1B;
+  send(req, sink);
+  TEST_ASSERT_EQUAL(meshpigeon_Error_ErrorCode_ERROR_CODE_BAD_PAYLOAD,
+                    sink->at(0).error());
+  TEST_ASSERT_EQUAL(0, proc->device_settings().name[0]);  // nothing applied
+
+  sink->clear();
+  req.id = 2;
+  TEST_ASSERT_TRUE(DeviceSettings::valid_name("\xC3\xB6", 2));  // UTF-8 "o"
+  set_str(m.name, sizeof(m.name), "pigeon");
+  send(req, sink);
+  TEST_ASSERT_EQUAL(meshpigeon_RadioToClient_device_settings_tag,
+                    sink->at(0).which());
 }
 
 void test_device_settings_defaults() {
@@ -1906,11 +2011,13 @@ int main() {
   RUN_TEST(test_store_since_cursor_is_resumable);
   RUN_TEST(test_store_get_across_wrap);
   RUN_TEST(test_store_purge_resets_history);
+  RUN_TEST(test_store_dropped_survives_a_purge);
   RUN_TEST(test_settings_serialize_roundtrip);
   RUN_TEST(test_settings_corrupt_crc_rejected);
   RUN_TEST(test_settings_bad_size_rejected);
   RUN_TEST(test_device_settings_defaults_and_validation);
   RUN_TEST(test_ping_echoes);
+  RUN_TEST(test_max_size_pong_still_fits_the_frame);
   RUN_TEST(test_ping_skips_unknown_fields);
   RUN_TEST(test_unknown_operation_errors);
   RUN_TEST(test_malformed_or_unidentified_envelope_dropped);
@@ -1919,6 +2026,7 @@ int main() {
   RUN_TEST(test_get_radio_settings);
   RUN_TEST(test_set_radio_persists_and_applies);
   RUN_TEST(test_set_radio_bad_payload);
+  RUN_TEST(test_set_radio_rejects_out_of_range_tx_power);
   RUN_TEST(test_set_radio_apply_failure_is_tx_failed);
   RUN_TEST(test_rejected_retune_leaves_the_radio_usable);
   RUN_TEST(test_set_radio_without_settings_is_bad_payload);
@@ -1941,6 +2049,7 @@ int main() {
   RUN_TEST(test_boot_reports_a_dead_radio_and_still_loads_settings);
   RUN_TEST(test_send_packet_survives_a_failed_apply);
   RUN_TEST(test_device_settings_defaults);
+  RUN_TEST(test_set_device_name_rejects_control_bytes);
   RUN_TEST(test_set_device_name_renames_and_broadcasts);
   RUN_TEST(test_set_device_settings_wifi_applies_live);
   RUN_TEST(test_set_device_settings_is_atomic);

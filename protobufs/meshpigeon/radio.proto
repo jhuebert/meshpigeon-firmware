@@ -41,7 +41,8 @@ message RadioSettings {
   // Coding rate denominator: 5..8 means 4/5 .. 4/8.
   uint32 cr = 4;
 
-  // TX power in dBm.
+  // TX power in dBm, 0..22 (the SX1262/LR1110 ceiling; anything above is
+  // rejected rather than truncated).
   uint32 power_dbm = 5;
 
   // Bumped by the firmware (+1) on every accepted change; ignored in

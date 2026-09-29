@@ -1,23 +1,35 @@
 #ifndef MESHPIGEON_RADIO_LR1110_H
 #define MESHPIGEON_RADIO_LR1110_H
 
-#include <RadioLib.h>
 #include <SPI.h>
 
-#include "meshpigeon/command_processor.h"
+#include "radio_lora.h"
 
 namespace meshpigeon {
 
+/** LR1110-specific facts for LoraRadioBase. */
+struct Lr1110Traits {
+  static constexpr uint32_t kIrqTxDone = RADIOLIB_LR11X0_IRQ_TX_DONE;
+  static constexpr uint32_t kIrqRxDone = RADIOLIB_LR11X0_IRQ_RX_DONE;
+  static constexpr uint32_t kIrqCrcErr = RADIOLIB_LR11X0_IRQ_CRC_ERR;
+  static constexpr uint32_t kIrqHeaderErr = RADIOLIB_LR11X0_IRQ_HEADER_ERR;
+  static constexpr uint8_t kCrcLen = 2;
+  // A corrupted LoRa header can desync the RX buffer; recover via standby.
+  static constexpr bool kHeaderErrQuirk = true;
+};
+
 /**
- * LR1110 (RadioLib) implementation of ILoRaRadio — same async-TX / polled-RX
- * model as Sx1262Radio. Board config mirrors MeshCore's t1000-e variant:
- * DIO3 TCXO, DIO5-8 RF switch table, boosted RX gain.
+ * LR1110 (RadioLib) implementation of ILoRaRadio — the same async-TX /
+ * polled-RX model as the SX1262, sharing one state machine through
+ * LoraRadioBase. Board config mirrors MeshCore's t1000-e variant: DIO3
+ * TCXO, DIO5-8 RF switch table, boosted RX gain.
  */
-class Lr1110Radio : public ILoRaRadio {
+class Lr1110Radio : public LoraRadioBase<LR1110, Lr1110Traits> {
  public:
-  Lr1110Radio() : radio_(new Module(MESHPIGEON_PIN_LORA_NSS, MESHPIGEON_PIN_LORA_DIO1,
-                                    MESHPIGEON_PIN_LORA_RST,
-                                    MESHPIGEON_PIN_LORA_BUSY)) {}
+  Lr1110Radio()
+      : LoraRadioBase<LR1110, Lr1110Traits>(
+            new Module(MESHPIGEON_PIN_LORA_NSS, MESHPIGEON_PIN_LORA_DIO1,
+                       MESHPIGEON_PIN_LORA_RST, MESHPIGEON_PIN_LORA_BUSY)) {}
 
   bool begin() override {
     float tcxo = 0.0f;
@@ -42,96 +54,14 @@ class Lr1110Radio : public ILoRaRadio {
     return apply(last_settings_);
   }
 
-  bool apply(const RadioSettings& s) override {
-    last_settings_ = s;
-    int state = radio_.standby();
-    if (state != RADIOLIB_ERR_NONE) return false;
-    state = radio_.setFrequency((float)s.freq_hz / 1000000.0f);
-    if (state != RADIOLIB_ERR_NONE) return false;
-    state = radio_.setBandwidth((float)s.bw_x100khz / 100.0f);
-    if (state != RADIOLIB_ERR_NONE) return false;
-    state = radio_.setSpreadingFactor(s.sf);
-    if (state != RADIOLIB_ERR_NONE) return false;
-    state = radio_.setCodingRate(s.cr);
-    if (state != RADIOLIB_ERR_NONE) return false;
-    // Longer preamble for lower SF (MeshCore preambleLengthForSF)
-    state = radio_.setPreambleLength(s.sf <= 8 ? 32 : 16);
-    if (state != RADIOLIB_ERR_NONE) return false;
-    state = radio_.setOutputPower((int8_t)s.power_dbm);
-    if (state != RADIOLIB_ERR_NONE) return false;
-    state = radio_.setCRC(2);  // on-air CRC always on
-    if (state != RADIOLIB_ERR_NONE) return false;
-    return start_rx();
-  }
-
-  int transmit(const uint8_t* raw, uint8_t len) override {
-    if (tx_started_) return -1;  // already keying up
-    // stop RX so we can transmit
-    radio_.standby();
-    int state = radio_.startTransmit(const_cast<uint8_t*>(raw), len);
-    if (state != RADIOLIB_ERR_NONE) {
-      start_rx();
-      return -1;
-    }
-    tx_started_ = true;
-    return 0;
-  }
-
-  bool tx_done() override {
-    if (!tx_started_) return true;
-    if (radio_.getIrqFlags() & RADIOLIB_LR11X0_IRQ_TX_DONE) {
-      radio_.finishTransmit();  // clears IRQ + returns to standby
-      tx_started_ = false;
-      start_rx();
-      return true;
-    }
-    return false;
-  }
-
-  bool receive(uint8_t* raw, uint8_t* len, int8_t* rssi, int8_t* snr) override {
-    uint32_t irq = radio_.getIrqFlags();
-    if (!(irq & RADIOLIB_LR11X0_IRQ_RX_DONE)) return false;
-    // Known LR11x0 quirk (MeshCore CustomLR1110): a corrupted header can
-    // desync the RX buffer — return to standby before restarting RX.
-    if ((irq & RADIOLIB_LR11X0_IRQ_HEADER_ERR) &&
-        radio_.getPacketLength(true) == 0) {
-      radio_.standby();
-      start_rx();
-      return false;
-    }
-    bool crc_ok = !(irq & (RADIOLIB_LR11X0_IRQ_CRC_ERR |
-                           RADIOLIB_LR11X0_IRQ_HEADER_ERR));
-    uint8_t plen = radio_.getPacketLength(true);
-    uint8_t buf[MESHPIGEON_MAX_RAW_PACKET];
-    bool got = crc_ok && plen > 0 && plen <= MESHPIGEON_MAX_RAW_PACKET &&
-               radio_.readData(buf, plen) == RADIOLIB_ERR_NONE;  // clears IRQ
-    start_rx();
-    if (!got) return false;
-    *len = plen;
-    memcpy(raw, buf, *len);
-    *rssi = (int8_t)radio_.getRSSI();
-    *snr = (int8_t)radio_.getSNR();
-    return true;
-  }
-
- private:
-  bool start_rx() {
-    int state = radio_.startReceive();
-    return state == RADIOLIB_ERR_NONE;
-  }
-
 #ifdef MESHPIGEON_RADIO_RF_SWITCH_TABLE
+  // DIO5-8 RF switch table from MeshCore's t1000-e target.cpp
   static const uint32_t k_rfswitch_dios[Module::RFSWITCH_MAX_PINS];
   static const Module::RfSwitchMode_t k_rfswitch_table[];
 #endif
-
-  LR1110 radio_;
-  RadioSettings last_settings_ = RadioSettings::unset();
-  bool tx_started_ = false;
 };
 
 #ifdef MESHPIGEON_RADIO_RF_SWITCH_TABLE
-// DIO5-8 RF switch table from MeshCore's t1000-e target.cpp
 const uint32_t Lr1110Radio::k_rfswitch_dios[Module::RFSWITCH_MAX_PINS] = {
     RADIOLIB_LR11X0_DIO5, RADIOLIB_LR11X0_DIO6, RADIOLIB_LR11X0_DIO7,
     RADIOLIB_LR11X0_DIO8, RADIOLIB_NC,

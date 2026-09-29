@@ -24,12 +24,21 @@
 // The Semtech SX12xx silicon cap: everything MeshCore and Meshtastic can put
 // on the air (docs/radio-protocol.md §2).
 #define MESHPIGEON_MAX_RAW_PACKET 255
-// Biggest serialized envelope we accept in a frame. Sized so a worst-case
-// PacketEntry (255 raw bytes + metadata) plus envelope overhead fits with
-// headroom (docs/radio-protocol.md §2). The largest message nanopb reports
-// is well under it (PacketEntry is 299 bytes); 512 is the cap the whole
-// stack agrees on, not a measured worst case.
+// Biggest serialized envelope we accept in a frame (docs/radio-protocol.md §2).
+// 512 is not "a round number with headroom" — it is the exact size of the
+// largest legal envelope: a Pong echoing a maximum-size (500 B) Ping with a
+// 5-byte varint id encodes to exactly 512 bytes. Response encoding uses this
+// same cap, so a change that grows an envelope (a new field, a wider oneof
+// tag) can push the worst case over it and make encode_response() return 0 —
+// which drops the answer silently. test_max_size_pong_still_fits_the_frame
+// pins the boundary; bump this constant in the same commit that breaks it.
 #define MESHPIGEON_MAX_FRAME_PAYLOAD 512
+// TX power ceiling in dBm, 0..MESHPIGEON_TX_POWER_MAX (docs/radio-protocol.md §6).
+// Both radio ports hand the value to RadioLib as an int8_t, so a power above
+// 127 would not merely be out of range — it would wrap NEGATIVE (200 -> -56
+// dBm) and the board would key up quietly at the wrong power. The wire field
+// is a uint32, so the core must reject the range rather than trust the caller.
+#define MESHPIGEON_TX_POWER_MAX 22
 // Device-settings limits (mirrored by the nanopb .options caps).
 #define MESHPIGEON_NAME_MAX 20
 #define MESHPIGEON_PIN_MIN 4

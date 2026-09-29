@@ -215,6 +215,22 @@ These are not hypotheticals; each one cost a debugging session.
   conversion is `×10` / `÷10`, not `×100` / `÷100`. `RadioSettings` still
   carries a `region` field for on-flash format compatibility; new writes always
   set 0 (the region-preset concept is gone).
+- **A field is range-checked at the wire or it is not checked at all.** Every
+  value the core narrows on its way to the hardware is validated against the
+  *narrowed* range, not merely the incoming type: `power_dbm` is a `uint32`
+  on the wire but reaches the radio as an `int8_t`, so 200 would arrive as
+  −56 dBm and key up at the wrong power instead of failing
+  (`MESHPIGEON_TX_POWER_MAX`, §2). `bandwidth_hz` is the same shape (checked
+  before the ÷10 conversion, so 655370 Hz cannot wrap into 10 Hz). A new
+  narrowing cast needs its range check in the same commit.
+- **Both LoRa radio ports share one state machine** (`src/radio_lora.h`,
+  `LoraRadioBase<Radio, Traits>`); the two `radio_*.h` files carry only
+  `begin()` and a `Traits` struct of the three facts that differ (IRQ bit
+  names, on-air CRC length, the LR1110 header-error quirk). Net flash is
+  slightly *smaller* than the two hand-written copies were. Keep the trait
+  members `constexpr`: they are read in `if` conditions, and a plain
+  `static const` member is not a constant expression. Do not re-introduce a
+  second copy of the TX/RX loop.
 - **Uptime wrap detection is `now < last_ms_`**, nothing fancier. A monotonic
   32-bit `millis()` only goes backwards at the wrap; adding a "is it a big
   enough jump" guard makes the real case (wrapping *into a small value*)
@@ -244,15 +260,22 @@ These are not hypotheticals; each one cost a debugging session.
   handed `kMaxCapabilities`; a value that does not fit is neither written nor
   counted. Ignoring `max` while still returning the count is how a board ends
   up advertising `CAPABILITY_UNSPECIFIED` for every capability it has.
-- **`response_.body` is a union.** Every `build_*()` starts by zeroing the
-  body it is about to fill, and every response starts with `begin_response(id)`
-  — so a builder never depends on all sixteen call sites having reset the
-  envelope first, and a board hook that fills only the Status fields it knows
-  leaves the rest reading as "unknown". Zero a generated body through a local
-  (`const StatusMessage empty = StatusMessage_init_zero; body = empty;`), not
-  `body.status = StatusMessage_init_zero;`: brace-assignment compiles on the
-  host and on arm-none-eabi but is rejected by the xtensa toolchain, so
-  `pio test -e native` will not catch it. `pio run` covers all four.
+- **`begin_response()` is the only place a response is reset.** It zeroes the
+  whole envelope, union included, so a field a builder (or a board hook)
+  that only knows some of the message does not set reads as "unknown"
+  instead of as the previous Status's values. Every `build_*`, every
+  `send_*` and every inline body fill must call it first — three of them
+  used to zero their own body as well, which was pure belt-and-braces (all
+  three callers already called `begin_response`) and *misstated* the rule,
+  because `send_error`/`send_ok`/`send_pong`/`build_packet_entry` never did
+  it. One reset point, one rule, enforced by review rather than by three
+  copies of the same block. If a builder is ever added that cannot call
+  `begin_response` first, fix the shape instead of adding a second reset. If
+  you *do* find yourself needing a second zero, assign through a local
+  (`const StatusMessage empty = StatusMessage_init_zero; body = empty;`) and
+  not `body.status = StatusMessage_init_zero;` — brace-assignment compiles on
+  the host and on arm-none-eabi but the xtensa toolchain rejects it, so
+  `pio test -e native` will not catch it and only `pio run` covers all four.
 - **`regen-protos.sh` needs an absolute, pre-created output directory.** The
   PyInstaller-packed generator mishandles relative `../` paths. The script
   resolves `OUT` with `$(pwd)` and `mkdir -p`s it; do not "simplify" that back.
@@ -283,7 +306,13 @@ These are not hypotheticals; each one cost a debugging session.
   straight out of the sink inside one handler call, so an unbounded
   `max_count` would let a client hold the loop (and the BLE queue) for as long
   as the store is deep. `FetchEnd` can report fewer entries than asked for;
-  clients resume from the last `seq`.
+  clients resume from the last `seq`. The same reasoning bounds **inbound**
+  decoding: a transport decodes at most `FRAME_MAX_DRAIN_BYTES_PER_PUMP`
+  (16 max-size frames' worth) per board-loop tick, because `Ping` is
+  auth-exempt and an unbounded `while (available())` would let one client keep
+  the radio from ever being polled. The budget is in **bytes, not frames** —
+  garbage never completes a frame, so a frame counter would never advance.
+  Every transport that drains a socket/FIFO in `pump()` uses it.
 - **The CRC is on the wire, so any client that isn't a transport has to strip
   it.** What arrives is `COBS(envelope ‖ crc16) 0x00`: read to the `0x00`
   delimiter, COBS-decode, **drop the trailing 2 bytes**, *then* protobuf-decode.

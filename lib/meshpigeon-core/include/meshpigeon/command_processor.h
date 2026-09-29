@@ -169,7 +169,12 @@ class CommandProcessor {
   void handle_request(const ClientToRadioMessage& req, IFrameSink* from);
 
   // ---- response building: fill response_, then deliver/broadcast it ----
-  /** Start a fresh response carrying `id` (0 for an async push). */
+  /** Start a fresh response carrying `id` (0 for an async push). This is
+   *  the ONLY place a response envelope is reset, and every builder,
+   *  send_* and inline fill below must call it first: it zeroes the whole
+   *  envelope, union included, so a field a builder or a board hook does
+   *  not set reads as "unset" rather than as the previous response's value.
+   *  A builder that skips it inherits the previous response's fields. */
   void begin_response(uint32_t id);
   /** Serialize response_ into `buf` (MESHPIGEON_MAX_FRAME_PAYLOAD); 0 if
    *  it does not fit, which is the only way an answer can go missing. */
