@@ -289,10 +289,10 @@ extern "C" {
 #define meshpigeon_DeviceInfo_auth_required_tag  11
 #define meshpigeon_DeviceInfo_noise_floor_dbm_tag 12
 #define meshpigeon_DeviceSettings_name_tag       1
-#define meshpigeon_DeviceSettings_wifi_enabled_tag 3
-#define meshpigeon_DeviceSettings_wifi_ssid_tag  4
-#define meshpigeon_DeviceSettings_wifi_password_tag 5
-#define meshpigeon_DeviceSettings_wifi_port_tag  6
+#define meshpigeon_DeviceSettings_wifi_enabled_tag 2
+#define meshpigeon_DeviceSettings_wifi_ssid_tag  3
+#define meshpigeon_DeviceSettings_wifi_password_tag 4
+#define meshpigeon_DeviceSettings_wifi_port_tag  5
 #define meshpigeon_SetDeviceSettings_name_tag    1
 #define meshpigeon_SetDeviceSettings_pin_tag     2
 #define meshpigeon_SetDeviceSettings_wifi_enabled_tag 3
@@ -347,10 +347,10 @@ X(a, STATIC,   SINGULAR, UINT32,   oldest_seq,        4)
 
 #define meshpigeon_DeviceSettings_FIELDLIST(X, a) \
 X(a, STATIC,   SINGULAR, STRING,   name,              1) \
-X(a, STATIC,   SINGULAR, BOOL,     wifi_enabled,      3) \
-X(a, STATIC,   SINGULAR, STRING,   wifi_ssid,         4) \
-X(a, STATIC,   SINGULAR, STRING,   wifi_password,     5) \
-X(a, STATIC,   SINGULAR, UINT32,   wifi_port,         6)
+X(a, STATIC,   SINGULAR, BOOL,     wifi_enabled,      2) \
+X(a, STATIC,   SINGULAR, STRING,   wifi_ssid,         3) \
+X(a, STATIC,   SINGULAR, STRING,   wifi_password,     4) \
+X(a, STATIC,   SINGULAR, UINT32,   wifi_port,         5)
 #define meshpigeon_DeviceSettings_CALLBACK NULL
 #define meshpigeon_DeviceSettings_DEFAULT NULL
 

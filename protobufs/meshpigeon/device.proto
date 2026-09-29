@@ -139,20 +139,16 @@ message DeviceSettings {
   // in a response.
   string name = 1;
 
-  // Field 2 was briefly a pin_is_default flag; removed — the app tracks
-  // what it set in its own database. The number is reserved, never reused.
-  reserved 2;
-
-  bool wifi_enabled = 3;
+  bool wifi_enabled = 2;
 
   // Station SSID; empty when Wi-Fi is not configured.
-  string wifi_ssid = 4;
+  string wifi_ssid = 3;
 
   // WPA2/3 passphrase; empty when not configured.
-  string wifi_password = 5;
+  string wifi_password = 4;
 
   // TCP server port (default 5000).
-  uint32 wifi_port = 6;
+  uint32 wifi_port = 5;
 }
 
 // Writes a SUBSET of the device settings: fields left unset are unchanged.
