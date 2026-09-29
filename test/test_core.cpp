@@ -104,6 +104,12 @@ class FakeHooks : public IBoardHooks {
   uint8_t usb_cdc_clients() override { return usb_cdc_clients_; }
   uint8_t wifi_tcp_clients() override { return wifi_tcp_clients_; }
   void fill_status(StatusMessage* status) override {
+    // A sparse hook: exactly the shape a board with no Wi-Fi has, and the
+    // one that would surface a stale union in Status.
+    if (status_sparse_) {
+      status->wifi_state = meshpigeon_Status_WifiState_WIFI_STATE_OFF;
+      return;
+    }
     status->wifi_state = status_wifi_state_;
     if (status_wifi_state_ ==
         meshpigeon_Status_WifiState_WIFI_STATE_CONNECTED) {
@@ -144,6 +150,7 @@ class FakeHooks : public IBoardHooks {
   uint8_t usb_cdc_clients_ = 1;
   uint8_t wifi_tcp_clients_ = 2;
   bool wifi_supported_ = true;
+  bool status_sparse_ = false;
   DeviceSettings wifi_{};
   char name_[MESHPIGEON_NAME_MAX + 1] = {0};
   int reboot_calls_ = 0;
@@ -1819,6 +1826,36 @@ void test_status_pushed_on_wifi_transition() {
   TEST_ASSERT_EQUAL(3, sink->at(0).m().body.status.ble_clients);
 }
 
+void test_status_never_inherits_the_previous_response() {
+  // IBoardHooks::fill_status only owes the core the fields the board knows
+  // about; a board with no Wi-Fi fills the state and nothing else. The rest
+  // of the Status must read as "unknown", whatever the previous response
+  // left in response_.body — the builder zeroes the body it fills, so that
+  // does not depend on every call site remembering to reset response_.
+  ClientToRadioMessage info = request(1);
+  info.which_body = kOpGetDeviceInfo;
+  send(info, sink);  // the biggest response the core builds
+  TEST_ASSERT_EQUAL(meshpigeon_RadioToClient_device_info_tag,
+                    sink->at(0).which());
+
+  // A hook that reports only the state, nothing else.
+  hooks->status_sparse_ = true;
+  sink->clear();
+  ClientToRadioMessage status = request(2);
+  status.which_body = kOpGetStatus;
+  send(status, sink);
+  const StatusMessage& m = sink->at(0).m().body.status;
+  TEST_ASSERT_EQUAL(meshpigeon_Status_WifiState_WIFI_STATE_OFF, m.wifi_state);
+  TEST_ASSERT_EQUAL_STRING("", m.wifi_ssid);
+  TEST_ASSERT_EQUAL(0, m.wifi_ipv4.size);
+  TEST_ASSERT_EQUAL(0, m.wifi_port);
+  TEST_ASSERT_EQUAL(0, m.wifi_rssi);
+  // The counts are the core's own and are always written.
+  TEST_ASSERT_EQUAL(3, m.ble_clients);
+  TEST_ASSERT_EQUAL(1, m.usb_cdc_clients);
+  TEST_ASSERT_EQUAL(2, m.wifi_tcp_clients);
+}
+
 void test_uptime_is_64_bit_across_the_millis_wrap() {
   tick(0);                        // let the core see the starting time
   raw_clock->set(0xFFFFF000u);    // jump forward to just before the wrap
@@ -1919,6 +1956,7 @@ int main() {
   RUN_TEST(test_factory_reset);
   RUN_TEST(test_reboot_and_bootloader);
   RUN_TEST(test_status_reads_the_hooks);
+  RUN_TEST(test_status_never_inherits_the_previous_response);
   RUN_TEST(test_status_pushed_on_wifi_transition);
   RUN_TEST(test_uptime_is_64_bit_across_the_millis_wrap);
   return UNITY_END();

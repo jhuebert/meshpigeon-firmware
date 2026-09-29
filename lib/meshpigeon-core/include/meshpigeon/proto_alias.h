@@ -42,6 +42,13 @@ using ErrorCode = meshpigeon_Error_ErrorCode;
 #define ClientToRadioMessage_fields meshpigeon_ClientToRadio_fields
 #define RadioToClientMessage_fields meshpigeon_RadioToClient_fields
 
+// Per-response-body zero values. Each build_*() starts from these, so a body
+// field the builder (or a board hook) does not set reads as "unset" instead
+// of as whatever the previous response happened to leave in the union.
+#define RadioSettingsMessage_init_zero meshpigeon_RadioSettings_init_zero
+#define DeviceSettingsMessage_init_zero meshpigeon_DeviceSettings_init_zero
+#define StatusMessage_init_zero meshpigeon_Status_init_zero
+
 // The oneof variant discriminators, by operation.
 enum ClientOp : pb_size_t {
     kOpNone = 0,

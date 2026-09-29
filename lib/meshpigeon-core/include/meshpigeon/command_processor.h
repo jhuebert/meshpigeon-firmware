@@ -158,7 +158,7 @@ class CommandProcessor {
   int32_t noise_floor_dbm() const { return noise_floor_dbm_; }
   /** False once the radio has failed to come up or to accept a tuning. */
   bool radio_ok() const { return radio_ok_; }
-  bool tx_in_flight() const { return tx_pending_ != 0; }
+  bool tx_in_flight() const { return tx_pending_; }
   size_t sink_count() const { return num_sinks_; }
   size_t sink_free() const { return kMaxSinks - num_sinks_; }
 
@@ -169,6 +169,11 @@ class CommandProcessor {
   void handle_request(const ClientToRadioMessage& req, IFrameSink* from);
 
   // ---- response building: fill response_, then deliver/broadcast it ----
+  /** Start a fresh response carrying `id` (0 for an async push). */
+  void begin_response(uint32_t id);
+  /** Serialize response_ into `buf` (MESHPIGEON_MAX_FRAME_PAYLOAD); 0 if
+   *  it does not fit, which is the only way an answer can go missing. */
+  size_t encode_response(uint8_t* buf);
   void build_radio_settings();
   void build_device_settings();
   void build_status();
@@ -200,7 +205,6 @@ class CommandProcessor {
   void build_name(const DeviceSettings& s,
                   char out[MESHPIGEON_NAME_MAX + 1]) const;
   bool first_owner_lock_active() const;
-
   PacketStore& store_;
   UptimeClock& clock_;
   SettingsStore& settings_store_;
@@ -223,7 +227,7 @@ class CommandProcessor {
   uint8_t auth_fails_ = 0;
   uint64_t auth_backoff_until_ = 0;
 
-  uint8_t tx_pending_ = 0;  // a SEND_PACKET is keying up
+  bool tx_pending_ = false;  // a SEND_PACKET is keying up
   uint32_t tx_pending_seq_ = 0;
 
   // Scratch for building responses; a member so the ~520-byte encode

@@ -72,12 +72,15 @@ void CommandProcessor::effective_name(
 
 bool CommandProcessor::boot() {
   // Settings load even when the radio is dead: the device still answers, and
-  // the app needs its name, PIN and store stats (docs/radio-protocol.md §4).
+  // the app needs its name, PIN and store stats (docs/radio-protocol.md §5).
+  //
+  // A failed load leaves the safe default in place and does NOT persist it
+  // (avoid flash wear until an app tunes us); a later apply() is what writes.
+  RadioSettings stored;
   settings_ = RadioSettings::unset();
-  // First boot: keep the safe default, don't persist it (avoid wear until an
-  // app tunes us). A later apply() is what writes.
-  if (!settings_store_.load(&settings_)) settings_ = RadioSettings::unset();
-  settings_store_.load_device(&device_);  // false => defaults, which it wrote
+  if (settings_store_.load(&stored)) settings_ = stored;
+  // A false load means "never written": the store hands back the defaults.
+  settings_store_.load_device(&device_);
   if (device_.wifi_port == 0) device_.wifi_port = MESHPIGEON_WIFI_PORT_DEFAULT;
   radio_ok_ = radio_.begin() && radio_.apply(settings_);
   return radio_ok_;
@@ -108,17 +111,28 @@ static size_t encode_envelope(uint8_t* out, size_t cap,
 
 // ---- response delivery ------------------------------------------------------
 
+void CommandProcessor::begin_response(uint32_t id) {
+  response_ = RadioToClientMessage_init_zero;
+  response_.id = id;  // 0 marks an async push
+}
+
+size_t CommandProcessor::encode_response(uint8_t* buf) {
+  return encode_envelope(buf, MESHPIGEON_MAX_FRAME_PAYLOAD, response_);
+}
+
 void CommandProcessor::deliver(IFrameSink* to) {
   if (to == NULL) return;
   uint8_t buf[MESHPIGEON_MAX_FRAME_PAYLOAD];
-  size_t len = encode_envelope(buf, sizeof(buf), response_);
+  size_t len = encode_response(buf);
   if (len != 0) to->send_frame(buf, len);
 }
 
 void CommandProcessor::broadcast_response(IFrameSink* except,
                                           bool authorized_only) {
+  // Encoded once and reused for every recipient: a FetchPackets burst or a
+  // Status push is one serialization, not one per sink.
   uint8_t buf[MESHPIGEON_MAX_FRAME_PAYLOAD];
-  size_t len = encode_envelope(buf, sizeof(buf), response_);
+  size_t len = encode_response(buf);
   if (len == 0) return;
   for (size_t i = 0; i < num_sinks_; i++) {
     if (sinks_[i] == NULL || sinks_[i] == except) continue;
@@ -133,6 +147,9 @@ void CommandProcessor::broadcast_response(IFrameSink* except,
 
 void CommandProcessor::build_radio_settings() {
   response_.which_body = meshpigeon_RadioToClient_radio_settings_tag;
+  // response_.body is a union: start from a zeroed message so a field this
+  // builder does not set cannot inherit the previous response's value.
+  response_.body.radio_settings = RadioSettingsMessage_init_zero;
   RadioSettingsMessage& m = response_.body.radio_settings;
   m.freq_hz = settings_.freq_hz;
   // bw_x100khz is in 0.01 kHz units, i.e. 10 Hz steps.
@@ -145,6 +162,7 @@ void CommandProcessor::build_radio_settings() {
 
 void CommandProcessor::build_device_settings() {
   response_.which_body = meshpigeon_RadioToClient_device_settings_tag;
+  response_.body.device_settings = DeviceSettingsMessage_init_zero;
   DeviceSettingsMessage& m = response_.body.device_settings;
   build_name(device_, m.name);
   m.wifi_enabled = device_.wifi_enabled;
@@ -160,6 +178,10 @@ void CommandProcessor::build_device_settings() {
 
 void CommandProcessor::build_status() {
   response_.which_body = meshpigeon_RadioToClient_status_tag;
+  // Zeroed first, so a hook that only fills the fields it knows about (a
+  // board with no Wi-Fi, say) leaves the rest reading as "unknown" instead
+  // of as the previous Status's values.
+  response_.body.status = StatusMessage_init_zero;
   StatusMessage& m = response_.body.status;
   // The hook owns the link state; the client counts are the core's, because
   // the sinks it broadcasts to are the core's registry.
@@ -170,8 +192,7 @@ void CommandProcessor::build_status() {
 }
 
 void CommandProcessor::build_packet_entry(uint32_t id, const StoredPacket& e) {
-  response_ = RadioToClientMessage_init_zero;
-  response_.id = id;
+  begin_response(id);
   response_.which_body = meshpigeon_RadioToClient_packet_entry_tag;
   response_.body.packet_entry.seq = e.seq;
   response_.body.packet_entry.raw.size = e.len;
@@ -187,24 +208,21 @@ void CommandProcessor::build_packet_entry(uint32_t id, const StoredPacket& e) {
 
 void CommandProcessor::send_error(uint32_t id, ErrorCode code,
                                   IFrameSink* to) {
-  response_ = RadioToClientMessage_init_zero;
-  response_.id = id;
+  begin_response(id);
   response_.which_body = meshpigeon_RadioToClient_error_tag;
   response_.body.error.code = code;
   deliver(to);
 }
 
 void CommandProcessor::send_ok(uint32_t id, IFrameSink* to) {
-  response_ = RadioToClientMessage_init_zero;
-  response_.id = id;
+  begin_response(id);
   response_.which_body = meshpigeon_RadioToClient_ok_tag;
   deliver(to);
 }
 
 void CommandProcessor::send_pong(uint32_t id, const pb_byte_t* payload,
                                  pb_size_t size, IFrameSink* to) {
-  response_ = RadioToClientMessage_init_zero;
-  response_.id = id;
+  begin_response(id);
   response_.which_body = meshpigeon_RadioToClient_pong_tag;
   if (size > sizeof(response_.body.pong.payload.bytes)) {
     size = sizeof(response_.body.pong.payload.bytes);
@@ -217,8 +235,7 @@ void CommandProcessor::send_pong(uint32_t id, const pb_byte_t* payload,
 }
 
 void CommandProcessor::send_device_info(uint32_t id, IFrameSink* from) {
-  response_ = RadioToClientMessage_init_zero;
-  response_.id = id;
+  begin_response(id);
   response_.which_body = meshpigeon_RadioToClient_device_info_tag;
   DeviceInfoMessage& m = response_.body.device_info;
   m.spec_version = MESHPIGEON_SPEC_VERSION;
@@ -250,8 +267,7 @@ void CommandProcessor::send_device_info(uint32_t id, IFrameSink* from) {
 // ---- semantic pushes -------------------------------------------------------
 
 void CommandProcessor::emit_tx_result(uint32_t seq, bool ok) {
-  response_ = RadioToClientMessage_init_zero;
-  response_.id = 0;  // async push
+  begin_response(0);
   response_.which_body = meshpigeon_RadioToClient_tx_result_tag;
   response_.body.tx_result.seq = seq;
   response_.body.tx_result.success = ok;
@@ -259,22 +275,19 @@ void CommandProcessor::emit_tx_result(uint32_t seq, bool ok) {
 }
 
 void CommandProcessor::notify_radio_changed(IFrameSink* except) {
-  response_ = RadioToClientMessage_init_zero;
-  response_.id = 0;
+  begin_response(0);
   build_radio_settings();
   broadcast_response(except);
 }
 
 void CommandProcessor::notify_device_settings_changed(IFrameSink* except) {
-  response_ = RadioToClientMessage_init_zero;
-  response_.id = 0;
+  begin_response(0);
   build_device_settings();
   broadcast_response(except, /*authorized_only=*/true);
 }
 
 void CommandProcessor::on_wifi_state_changed() {
-  response_ = RadioToClientMessage_init_zero;
-  response_.id = 0;
+  begin_response(0);
   build_status();
   broadcast_response(NULL);
 }
@@ -339,8 +352,7 @@ void CommandProcessor::handle_request(const ClientToRadioMessage& req,
 
     case kOpGetRadioSettings: {
       if (!require_auth(req.id, from)) return;
-      response_ = RadioToClientMessage_init_zero;
-      response_.id = req.id;
+      begin_response(req.id);
       build_radio_settings();
       deliver(from);
       return;
@@ -396,8 +408,7 @@ void CommandProcessor::handle_request(const ClientToRadioMessage& req,
       set_count_since_boot_++;
       // Multi-client: everyone else learns about the change (docs/radio-protocol.md §6.1).
       notify_radio_changed(from);
-      response_ = RadioToClientMessage_init_zero;
-      response_.id = req.id;
+      begin_response(req.id);
       build_radio_settings();  // post-bump, to the issuer
       deliver(from);
       return;
@@ -419,7 +430,7 @@ void CommandProcessor::handle_request(const ClientToRadioMessage& req,
                    from);
         return;
       }
-      if (tx_pending_ != 0) {
+      if (tx_pending_) {
         // One TX at a time: the radio keys up serially. Report busy; the
         // app's outbox owns retry policy (docs/radio-protocol.md §10).
         send_error(req.id, meshpigeon_Error_ErrorCode_ERROR_CODE_BUSY, from);
@@ -436,8 +447,7 @@ void CommandProcessor::handle_request(const ClientToRadioMessage& req,
       }
       // The response comes first (it is what the app is waiting on), then
       // the outcome — even when the radio refused the send outright.
-      response_ = RadioToClientMessage_init_zero;
-      response_.id = req.id;
+      begin_response(req.id);
       response_.which_body = meshpigeon_RadioToClient_packet_accepted_tag;
       response_.body.packet_accepted.seq = seq;
       deliver(from);
@@ -445,7 +455,7 @@ void CommandProcessor::handle_request(const ClientToRadioMessage& req,
         emit_tx_result(seq, false);  // refused immediately: no wait
         return;
       }
-      tx_pending_ = 1;
+      tx_pending_ = true;
       tx_pending_seq_ = seq;
       return;
     }
@@ -463,8 +473,7 @@ void CommandProcessor::handle_request(const ClientToRadioMessage& req,
                            delivered++;
                            return true;
                          });
-      response_ = RadioToClientMessage_init_zero;
-      response_.id = id;
+      begin_response(id);
       response_.which_body = meshpigeon_RadioToClient_fetch_end_tag;
       response_.body.fetch_end.count = delivered;
       deliver(from);
@@ -488,8 +497,7 @@ void CommandProcessor::handle_request(const ClientToRadioMessage& req,
     case kOpGetDeviceSettings: {
       // The Wi-Fi password lives in here, hence the gate (§8).
       if (!require_auth(req.id, from)) return;
-      response_ = RadioToClientMessage_init_zero;
-      response_.id = req.id;
+      begin_response(req.id);
       build_device_settings();
       deliver(from);
       return;
@@ -563,8 +571,7 @@ void CommandProcessor::handle_request(const ClientToRadioMessage& req,
       if (wifi_touched && hooks_) hooks_->apply_wifi(device_);
       // Everyone else learns about the change — the RADIO_CHANGED analogue.
       notify_device_settings_changed(from);
-      response_ = RadioToClientMessage_init_zero;
-      response_.id = req.id;
+      begin_response(req.id);
       build_device_settings();  // full post-write state to the issuer
       deliver(from);
       return;
@@ -573,8 +580,7 @@ void CommandProcessor::handle_request(const ClientToRadioMessage& req,
     case kOpGetStatus: {
       // Readable on every transport, auth or not: this is how a client on
       // BLE learns what the Wi-Fi is doing (docs/radio-protocol.md §9).
-      response_ = RadioToClientMessage_init_zero;
-      response_.id = req.id;
+      begin_response(req.id);
       build_status();
       deliver(from);
       return;
@@ -650,7 +656,7 @@ uint32_t CommandProcessor::on_packet_received(int8_t rssi, int8_t snr,
 
 void CommandProcessor::poll() {
   clock_.poll();
-  if (tx_pending_ != 0 && radio_.tx_done()) {
+  if (tx_pending_ && radio_.tx_done()) {
     // Started transmissions are reported as sent: the radio layer refuses
     // synchronously (ERROR_CODE_NO_RADIO / TxResult(false)) long before this
     // point, so anything still in flight did key up.
@@ -659,8 +665,8 @@ void CommandProcessor::poll() {
 }
 
 void CommandProcessor::on_tx_result(uint32_t seq, bool ok) {
-  if (tx_pending_ == 0 || seq != tx_pending_seq_) return;
-  tx_pending_ = 0;
+  if (!tx_pending_ || seq != tx_pending_seq_) return;
+  tx_pending_ = false;
   emit_tx_result(seq, ok);
 }
 
