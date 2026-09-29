@@ -35,19 +35,21 @@ class Sx1262Radio : public LoraRadioBase<SX1262, Sx126xTraits> {
 #ifdef MESHPIGEON_LORA_TCXO_MV
     tcxo = MESHPIGEON_LORA_TCXO_MV / 1000.0f;
 #endif
+    // RadioLib validates the tuning here, so prime the silicon with the safe
+    // default: CommandProcessor::boot() applies whatever was persisted (or
+    // this same default) immediately afterwards, and apply() is the only
+    // thing that ever changes the tuning from then on.
+    const RadioSettings s = RadioSettings::unset();
 #ifdef MESHPIGEON_PIN_RADIO_POWER_EN
     // Boards that gate the radio's supply (T114: SX126X_POWER_EN)
     pinMode(MESHPIGEON_PIN_RADIO_POWER_EN, OUTPUT);
     digitalWrite(MESHPIGEON_PIN_RADIO_POWER_EN, HIGH);
     delay(10);
 #endif
-    // RadioLib validates the tuning here; the safe default stands until
-    // CommandProcessor::boot() applies whatever was persisted.
-    int state = radio_.begin((float)last_settings_.freq_hz / 1000000.0f,
-                             (float)last_settings_.bw_x100khz / 100.0f,
-                             last_settings_.sf, last_settings_.cr,
+    int state = radio_.begin((float)s.freq_hz / 1000000.0f,
+                             (float)s.bw_x100khz / 100.0f, s.sf, s.cr,
                              RADIOLIB_SX126X_SYNC_WORD_PRIVATE,
-                             (int8_t)last_settings_.power_dbm, 16, tcxo,
+                             (int8_t)s.power_dbm, 16, tcxo,
                              tcxo > 0.0f);
     if (state != RADIOLIB_ERR_NONE) return false;
     // Headroom for +22 dBm TX (MeshCore SX126X_CURRENT_LIMIT=140)
@@ -65,7 +67,7 @@ class Sx1262Radio : public LoraRadioBase<SX1262, Sx126xTraits> {
     // Some boards (XIAO WIO, Heltec V3) switch the antenna via DIO2
     radio_.setDio2AsRfSwitch(true);
 #endif
-    return apply(last_settings_);
+    return apply(s);
   }
 };
 

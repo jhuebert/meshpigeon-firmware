@@ -36,13 +36,15 @@ class Lr1110Radio : public LoraRadioBase<LR1110, Lr1110Traits> {
 #ifdef MESHPIGEON_LORA_TCXO_MV
     tcxo = MESHPIGEON_LORA_TCXO_MV / 1000.0f;
 #endif
-    // RadioLib validates the tuning here; the safe default stands until
-    // CommandProcessor::boot() applies whatever was persisted.
-    int state = radio_.begin((float)last_settings_.freq_hz / 1000000.0f,
-                             (float)last_settings_.bw_x100khz / 100.0f,
-                             last_settings_.sf, last_settings_.cr,
+    // RadioLib validates the tuning here, so prime the silicon with the safe
+    // default: CommandProcessor::boot() applies whatever was persisted (or
+    // this same default) immediately afterwards, and apply() is the only
+    // thing that ever changes the tuning from then on.
+    const RadioSettings s = RadioSettings::unset();
+    int state = radio_.begin((float)s.freq_hz / 1000000.0f,
+                             (float)s.bw_x100khz / 100.0f, s.sf, s.cr,
                              RADIOLIB_LR11X0_LORA_SYNC_WORD_PRIVATE,
-                             (int8_t)last_settings_.power_dbm, 16, tcxo);
+                             (int8_t)s.power_dbm, 16, tcxo);
     if (state != RADIOLIB_ERR_NONE) return false;
 #ifdef MESHPIGEON_RADIO_RF_SWITCH_TABLE
     // T1000-E switches the antenna via DIO5-8 (MeshCore rfswitch_table)
@@ -51,7 +53,7 @@ class Lr1110Radio : public LoraRadioBase<LR1110, Lr1110Traits> {
 #ifdef MESHPIGEON_RADIO_RX_BOOSTED_GAIN
     radio_.setRxBoostedGainMode(true);
 #endif
-    return apply(last_settings_);
+    return apply(s);
   }
 
 #ifdef MESHPIGEON_RADIO_RF_SWITCH_TABLE

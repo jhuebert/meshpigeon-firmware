@@ -31,7 +31,6 @@ class LoraRadioBase : public ILoRaRadio {
     // The core already rejects a retune while a send is in flight; this is
     // the port refusing to corrupt its own state machine.
     if (tx_started_) return false;
-    last_settings_ = s;
     int state = radio_.standby();
     if (state != RADIOLIB_ERR_NONE) return false;
     state = radio_.setFrequency((float)s.freq_hz / 1000000.0f);
@@ -112,9 +111,6 @@ class LoraRadioBase : public ILoRaRadio {
 
  protected:
   explicit LoraRadioBase(Module* mod) : radio_(mod) {}
-  /** The tuning currently in force, so begin() can prime the silicon and a
-   *  failed apply() can report what the radio is really using. */
-  RadioSettings last_settings_ = RadioSettings::unset();
   /** The RadioLib handle, so a derived begin() can do its bring-up on the
    *  same part the shared state machine drives. */
   Radio radio_;
