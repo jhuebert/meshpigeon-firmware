@@ -725,15 +725,18 @@ void test_unknown_operation_errors() {
 void test_sink_registry_is_bounded_and_shared() {
   // The registry is one pool for every transport (docs/radio-protocol.md §3),
   // so add_sink has to be able to say no: a transport that ignored the
-  // result would broadcast into the void.
-  RecordingSink extra[8];
+  // result would broadcast into the void. The cap is measured, not spelled
+  // out here, so resizing it for a new transport stays a header-only change.
+  size_t free_before = proc->sink_free();
+  TEST_ASSERT_GREATER_THAN(0, free_before);
+  RecordingSink extra[16];
   size_t accepted = 0;
-  for (size_t i = 0; i < 8; i++) {
+  for (size_t i = 0; i < sizeof(extra) / sizeof(extra[0]); i++) {
     if (proc->add_sink(&extra[i])) accepted++;
   }
-  TEST_ASSERT_EQUAL(5, accepted);  // one was taken by setUp()'s sink
+  TEST_ASSERT_EQUAL(free_before, accepted);  // it says no at exactly full
   TEST_ASSERT_EQUAL(0, proc->sink_free());
-  for (size_t i = 0; i < 5; i++) {
+  for (size_t i = 0; i < accepted; i++) {
     proc->remove_sink(&extra[i]);
   }
   TEST_ASSERT_EQUAL(1, proc->sink_count());
@@ -928,6 +931,11 @@ void test_rejected_retune_leaves_the_radio_usable() {
   TEST_ASSERT_EQUAL(meshpigeon_RadioToClient_packet_accepted_tag,
                     sink->at(0).which());
   TEST_ASSERT_EQUAL(1, radio->tx_calls_);
+  // Let the fake's send finish, or the retune below would be refused as
+  // BUSY for a TX still in flight (which is its own rule — see
+  // test_retune_during_tx_is_busy_and_leaves_the_radio_usable).
+  radio->complete_tx();
+  tick(0);
 
   // The successful retune is what makes a radio that failed at boot usable.
   radio->apply_ok_ = true;
@@ -943,13 +951,79 @@ void test_rejected_retune_leaves_the_radio_usable() {
 }
 
 void test_set_radio_without_settings_is_bad_payload() {
-  // nanopb decodes an absent submessage as an empty one: without an explicit
-  // has_settings check there is no way to tell it from "all defaults".
+  // nanopb decodes an absent submessage as an empty one, which is why the
+  // schema field is `optional`: without an explicit has_settings check there
+  // is no way to tell it from "all defaults".
   ClientToRadioMessage req = request(1);
   req.which_body = kOpSetRadioSettings;
   send(req, sink);
   TEST_ASSERT_EQUAL(meshpigeon_Error_ErrorCode_ERROR_CODE_BAD_PAYLOAD,
                     sink->at(0).error());
+}
+
+void test_retune_during_tx_is_busy_and_leaves_the_radio_usable() {
+  // Re-tuning mid-transmission used to strand the radio for good: the tuning
+  // sequence puts the part in standby, which aborts the TX on the silicon,
+  // so the in-flight transmission never completed and every later
+  // SendPacket answered BUSY until the board was power-cycled. BUSY is the
+  // documented answer (docs/radio-protocol.md §4) and the air stays usable.
+  radio->tx_async_ = true;  // a send stays in flight until complete_tx()
+
+  // One accepted retune first, so the first-owner lock is armed, then step
+  // past its window: from here on the only thing that can answer BUSY is the
+  // TX in flight, which is what makes this test mean what it says.
+  ClientToRadioMessage tune = request(1);
+  tune.which_body = kOpSetRadioSettings;
+  tune.body.set_radio_settings.has_settings = true;
+  RadioSettingsMessage& m = tune.body.set_radio_settings.settings;
+  m.freq_hz = 906875000;
+  m.bandwidth_hz = 125000;
+  m.sf = 9;
+  m.cr = 5;
+  send(tune, sink);
+  TEST_ASSERT_EQUAL(meshpigeon_RadioToClient_radio_settings_tag,
+                    sink->at(0).which());
+  tick(6 * 60 * 1000);
+
+  const uint8_t pkt[] = {0x45, 0x01};
+  ClientToRadioMessage tx = request(2);
+  tx.which_body = kOpSendPacket;
+  tx.body.send_packet.raw.size = sizeof(pkt);
+  memcpy(tx.body.send_packet.raw.bytes, pkt, sizeof(pkt));
+  sink->clear();
+  send(tx, sink);
+  TEST_ASSERT_EQUAL(meshpigeon_RadioToClient_packet_accepted_tag,
+                    sink->at(0).which());
+  TEST_ASSERT_TRUE(proc->tx_in_flight());
+
+  // The retune is refused, and nothing about the tuning in force changes.
+  const uint32_t epoch = proc->settings().config_epoch;
+  const uint32_t freq = proc->settings().freq_hz;
+  sink->clear();
+  tune.id = 3;
+  m.freq_hz = 868100000;
+  send(tune, sink);
+  TEST_ASSERT_EQUAL(meshpigeon_Error_ErrorCode_ERROR_CODE_BUSY,
+                    sink->at(0).error());
+  TEST_ASSERT_EQUAL(epoch, proc->settings().config_epoch);
+  TEST_ASSERT_EQUAL(freq, proc->settings().freq_hz);
+
+  // The refused retune did not strand the radio: the send finishes, and the
+  // next one is accepted as normal.
+  sink->clear();
+  radio->complete_tx();
+  tick(0);
+  TEST_ASSERT_EQUAL(meshpigeon_RadioToClient_tx_result_tag, sink->at(0).which());
+  TEST_ASSERT_FALSE(proc->tx_in_flight());
+  sink->clear();
+  ClientToRadioMessage again = request(4);
+  again.which_body = kOpSendPacket;
+  again.body.send_packet.raw.size = 1;
+  again.body.send_packet.raw.bytes[0] = 0x45;
+  send(again, sink);
+  TEST_ASSERT_EQUAL(meshpigeon_RadioToClient_packet_accepted_tag,
+                    sink->at(0).which());
+  TEST_ASSERT_EQUAL(2, radio->tx_calls_);
 }
 
 void test_first_owner_lock_honors_only_first_set() {
@@ -1208,6 +1282,42 @@ void test_fetch_packets_is_capped_per_request() {
   }
   TEST_ASSERT_EQUAL(200, total);
   TEST_ASSERT_EQUAL(0, sink->undecoded());
+}
+
+void test_fetch_cursor_starts_from_the_beginning() {
+  // The cursor is exclusive and seq 0 is never assigned, so 0 means "from the
+  // beginning" and stays correct for the life of the boot. StoreInfo
+  // .oldest_seq is the gap boundary instead — anything below it has been
+  // evicted for good — so a client resumes with the last seq it saw and must
+  // NOT resume with oldest_seq, which would skip the oldest live entry.
+  const uint8_t pkt[] = {0x45};
+  for (int i = 0; i < 5; i++) proc->on_packet_received(-72, 8, pkt, 1);
+
+  sink->clear();  // drop the five live pushes from above
+  ClientToRadioMessage info = request(1);
+  info.which_body = kOpGetDeviceInfo;
+  send(info, sink);
+  const uint32_t oldest = sink->at(0).m().body.device_info.store.oldest_seq;
+  TEST_ASSERT_EQUAL(1, oldest);
+
+  ClientToRadioMessage fetch = request(2);
+  fetch.which_body = kOpFetchPackets;
+  fetch.body.fetch_packets.since_seq = 0;  // "everything"
+  fetch.body.fetch_packets.max_count = 100;
+  sink->clear();
+  send(fetch, sink);
+  TEST_ASSERT_EQUAL(6, sink->count());  // 5 entries + FetchEnd
+  TEST_ASSERT_EQUAL(1, sink->at(0).m().body.packet_entry.seq);
+  TEST_ASSERT_EQUAL(5, sink->at(4).m().body.packet_entry.seq);
+  TEST_ASSERT_EQUAL(5, sink->at(5).m().body.fetch_end.count);
+
+  // Cursor at the newest entry: nothing left, and no error for asking.
+  fetch.id = 3;
+  fetch.body.fetch_packets.since_seq = 5;
+  sink->clear();
+  send(fetch, sink);
+  TEST_ASSERT_EQUAL(1, sink->count());
+  TEST_ASSERT_EQUAL(0, sink->at(0).m().body.fetch_end.count);
 }
 
 void test_rx_packet_pushes_to_all_sinks() {
@@ -1538,6 +1648,42 @@ void test_empty_pin_restores_the_factory_default() {
   TEST_ASSERT_TRUE(loaded.pin_is_default());
 }
 
+void test_rx_push_reaches_only_authorized_clients() {
+  // FetchPackets is auth-gated, so the live push of the very same raw bytes
+  // has to be gated the same way: an unauthenticated socket that merely
+  // attached would otherwise collect every packet the node hears, which
+  // makes the gate on fetch pointless. The store keeps them either way, so
+  // nothing is lost — an authorized client still fetches them.
+  const uint8_t pkt[] = {0x45, 0x09};
+
+  // Shipped default PIN: the device is open, so the push reaches everyone
+  // (which is what test_rx_packet_pushes_to_all_sinks covers).
+  proc->on_packet_received(-80, 10, pkt, sizeof(pkt));
+
+  lock_with_pin("1234");  // sink is now authenticated and inside
+  RecordingSink stranger;
+  proc->add_sink(&stranger);
+  sink->clear();
+  stranger.clear();
+
+  proc->on_packet_received(-81, 11, pkt, sizeof(pkt));
+  TEST_ASSERT_EQUAL(1, sink->count());
+  TEST_ASSERT_EQUAL(0, stranger.count());
+  TEST_ASSERT_EQUAL(meshpigeon_RadioToClient_packet_entry_tag, sink->at(0).which());
+  TEST_ASSERT_EQUAL(2, sink->at(0).m().body.packet_entry.seq);
+
+  // ...and the packets are still in the store for the authorized client.
+  sink->clear();
+  ClientToRadioMessage fetch = request(1);
+  fetch.which_body = kOpFetchPackets;
+  fetch.body.fetch_packets.since_seq = 0;
+  fetch.body.fetch_packets.max_count = 10;
+  send(fetch, sink);
+  TEST_ASSERT_EQUAL(3, sink->count());  // 2 entries + FetchEnd
+  TEST_ASSERT_EQUAL(2, sink->at(2).m().body.fetch_end.count);
+  proc->remove_sink(&stranger);
+}
+
 void test_device_settings_push_reaches_only_authorized_clients() {
   // The read model carries the Wi-Fi passphrase, so the async change push
   // must not be a free-for-all: a socket that merely attached would
@@ -1585,6 +1731,35 @@ void test_device_settings_push_reaches_only_authorized_clients() {
                            stranger.at(0).m().body.device_settings.wifi_password);
   proc->remove_sink(&stranger);
   proc->add_sink(sink);
+}
+
+void test_writing_a_pin_authorizes_the_writer() {
+  // Setting a PIN from the shipped (open) default must not lock the writer
+  // out of the device it just configured: it proved it knows the new PIN by
+  // writing it, exactly as it proved it knew the old one by getting through
+  // the (unlocked) gate.
+  TEST_ASSERT_TRUE(proc->device_settings().pin_is_default());
+  ClientToRadioMessage req = request(1);
+  req.which_body = kOpSetDeviceSettings;
+  req.body.set_device_settings.has_pin = true;
+  set_str(req.body.set_device_settings.pin,
+          sizeof(req.body.set_device_settings.pin), "4321");
+  send(req, sink);
+  TEST_ASSERT_EQUAL(meshpigeon_RadioToClient_device_settings_tag,
+                    sink->at(0).which());
+  TEST_ASSERT_FALSE(proc->device_settings().pin_is_default());
+
+  sink->clear();
+  ClientToRadioMessage get = request(2);
+  get.which_body = kOpGetDeviceSettings;
+  send(get, sink);
+  TEST_ASSERT_EQUAL(meshpigeon_RadioToClient_device_settings_tag,
+                    sink->at(0).which());
+  sink->clear();
+  ClientToRadioMessage info = request(3);
+  info.which_body = kOpGetDeviceInfo;
+  send(info, sink);
+  TEST_ASSERT_FALSE(sink->at(0).m().body.device_info.auth_required);
 }
 
 void test_changing_the_pin_re_gates_other_connections() {
@@ -2030,6 +2205,7 @@ int main() {
   RUN_TEST(test_set_radio_apply_failure_is_tx_failed);
   RUN_TEST(test_rejected_retune_leaves_the_radio_usable);
   RUN_TEST(test_set_radio_without_settings_is_bad_payload);
+  RUN_TEST(test_retune_during_tx_is_busy_and_leaves_the_radio_usable);
   RUN_TEST(test_first_owner_lock_honors_only_first_set);
   RUN_TEST(test_radio_changed_broadcast_to_others);
   RUN_TEST(test_send_packet_refuses_a_store_that_cannot_take_it);
@@ -2041,6 +2217,7 @@ int main() {
   RUN_TEST(test_fetch_packets_streams_entries_and_end);
   RUN_TEST(test_fetch_packets_since_cursor_skips_old);
   RUN_TEST(test_fetch_packets_is_capped_per_request);
+  RUN_TEST(test_fetch_cursor_starts_from_the_beginning);
   RUN_TEST(test_rx_packet_pushes_to_all_sinks);
   RUN_TEST(test_purge_store);
   RUN_TEST(test_sink_registry_is_bounded_and_shared);
@@ -2055,8 +2232,10 @@ int main() {
   RUN_TEST(test_set_device_settings_is_atomic);
   RUN_TEST(test_set_device_settings_capability_gate);
   RUN_TEST(test_empty_pin_restores_the_factory_default);
+  RUN_TEST(test_writing_a_pin_authorizes_the_writer);
   RUN_TEST(test_max_length_strings_survive_the_wire);
   RUN_TEST(test_device_settings_push_reaches_only_authorized_clients);
+  RUN_TEST(test_rx_push_reaches_only_authorized_clients);
   RUN_TEST(test_changing_the_pin_re_gates_other_connections);
   RUN_TEST(test_auth_gate);
   RUN_TEST(test_auth_is_per_connection);

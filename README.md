@@ -105,13 +105,20 @@ See [docs/radio-protocol.md](docs/radio-protocol.md).
 ## Acceptance checklist (per board, bench)
 
 - [ ] Boots and listens on persisted settings with no app attached.
+- [ ] A fresh board advertises the derived name (`MeshPigeon-XXXX`) and
+      resolves `meshpigeon-XXXX.local` — not `MeshPigeon-0000`, which is
+      what asking for the name before the BLE stack is up produces.
 - [ ] Survives a settings-persistence soak across reboots.
 - [ ] Stores ≥ target packet count; overflow drops oldest cleanly.
 - [ ] `FetchPackets` replay lets a fresh app reconstruct exact history.
 - [ ] A connected app forwards packets; the radio alone never transmits
       without a `SendPacket`.
+- [ ] Re-tuning mid-transmission answers `BUSY`, and the radio transmits
+      normally again once the send completes.
 - [ ] A custom PIN gates the node, and `Auth` unlocks one connection only.
 - [ ] Rotating the PIN locks every other connection out again.
+- [ ] With a PIN set, an unauthenticated connection sees no live packet
+      pushes and no device-settings pushes (and does on the default PIN).
 - [ ] 3 concurrent BLE clients can fetch history simultaneously.
 - [ ] Coexists with MeshCore repeaters on-air.
 

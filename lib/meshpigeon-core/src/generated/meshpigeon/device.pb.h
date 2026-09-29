@@ -53,11 +53,16 @@ typedef struct _meshpigeon_StoreInfo {
     uint32_t count;
     /* Byte budget of the ring (packet capacity depends on packet sizes). */
     uint32_t capacity_bytes;
-    /* Packets evicted by overflow (or dropped for exceeding the whole budget). */
+    /* Packets evicted by overflow (or dropped for exceeding the whole budget).
+ Survives PurgeStore — it counts overflow, not history — but, like the
+ rest of the store, it is per boot. */
     uint32_t dropped;
-    /* First retained seq, or the next seq to be assigned when empty. The
- baseline for a fresh FetchPackets cursor. Monotonic within a boot;
- restarts after a reboot (the store is RAM-only). */
+    /* First retained seq — the *gap boundary*: anything below it has been
+ evicted and can never be fetched again, so a client compares against it
+ to notice a gap. It is NOT a cursor to start from: FetchPackets.since_seq
+ is exclusive, so starting there would skip the oldest entry still held
+ (use since_seq = 0 for "everything"). Monotonic within a boot; restarts
+ after a reboot (the store is RAM-only). */
     uint32_t oldest_seq;
 } meshpigeon_StoreInfo;
 
@@ -155,7 +160,8 @@ typedef struct _meshpigeon_SetDeviceSettings {
  public default "0000" (knowable without any documentation, like every
  Bluetooth device's default); setting a value here replaces it. There is
  no "no PIN" state. Empty string restores the default; absent =
- unchanged. */
+ unchanged. A successful write authorizes THIS connection (it proved it
+ knows the new PIN by writing it) and de-authorizes every other one. */
     bool has_pin;
     char pin[9];
     bool has_wifi_enabled;
@@ -180,12 +186,16 @@ typedef struct _meshpigeon_GetStatus {
 typedef PB_BYTES_ARRAY_T(4) meshpigeon_Status_wifi_ipv4_t;
 typedef struct _meshpigeon_Status {
     meshpigeon_Status_WifiState wifi_state;
-    /* Currently associated SSID; empty when not connected. */
+    /* Currently associated SSID; empty when not connected. This is what the
+ driver latched onto, which is not always what is configured —
+ GetDeviceSettings reports the configured one. */
     char wifi_ssid[33];
     /* Station IPv4 address in network byte order, 4 bytes; zeroed when not
  connected. */
     meshpigeon_Status_wifi_ipv4_t wifi_ipv4;
-    /* Port the TCP server listens on. */
+    /* Configured TCP port (0 on boards with no Wi-Fi). The listener only runs
+ while associated, so this is the port to dial, not a promise that
+ something is currently listening. */
     uint32_t wifi_port;
     /* AP signal in dBm; 0 = unknown. Changes are NOT pushed — poll if wanted. */
     int32_t wifi_rssi;

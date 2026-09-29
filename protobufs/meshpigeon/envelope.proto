@@ -108,7 +108,8 @@ message RadioToClient {
     PacketAccepted packet_accepted = 5;
 
     // One stored packet: async live push (id = 0) while connected, or a
-    // FetchPackets stream item (request's id).
+    // FetchPackets stream item (request's id). The push reaches only
+    // authorized connections, since FetchPackets is auth-gated.
     PacketEntry packet_entry = 6;
 
     // Terminates a FetchPackets stream (request's id).
@@ -118,7 +119,8 @@ message RadioToClient {
     TxResult tx_result = 8;
 
     // GET/SET_DEVICE_SETTINGS response. The async "another client changed
-    // settings" push is this same message with id = 0.
+    // settings" push is this same message with id = 0, and reaches only
+    // authorized connections: the read model carries the Wi-Fi passphrase.
     DeviceSettings device_settings = 9;
 
     // GET_STATUS response. The async Wi-Fi state-transition push is this
@@ -148,8 +150,8 @@ message Error {
     // Wrong size/format/validation; the request was rejected atomically —
     // nothing was applied.
     ERROR_CODE_BAD_PAYLOAD = 2;
-    // TX in flight, the first-owner lock is active, or the packet store
-    // could not take the packet.
+    // TX in flight (a SendPacket or a re-tune), the first-owner lock is
+    // active, or the packet store could not take the packet.
     ERROR_CODE_BUSY = 3;
     // The radio refused or failed the transmission.
     ERROR_CODE_TX_FAILED = 4;

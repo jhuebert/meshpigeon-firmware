@@ -26,6 +26,7 @@
 #include <vector>
 
 #include "meshpigeon/command_processor.h"
+#include "meshpigeon/frame_drain.h"
 #include "meshpigeon/framing.h"
 #include "meshpigeon/sim_radio.h"
 
@@ -108,18 +109,26 @@ class Client : public IFrameSink {
     ssize_t n = recv(fd_, buf, sizeof(buf), MSG_DONTWAIT);
     if (n == 0) return false;  // closed
     if (n < 0) return true;    // no data right now
-    for (ssize_t i = 0; i < n; i++) {
-      size_t res = reader_.feed(buf[i], frame_);
-      if (res != 0 && res != (size_t)-1) {
-        processor().on_envelope(frame_, res, this);
-      }
-    }
+    // Drained through the same bounded helper the boards use, so the sim
+    // cannot drift into a differently-budgeted loop.
+    BufferStream bytes(buf, (size_t)n);
+    drain_frames(processor(), reader_, frame_, this, bytes);
     return true;
   }
 
   int fd() const { return fd_; }
 
  private:
+  /** A recv()ed buffer as a stream, so the shared drain can consume it. */
+  struct BufferStream {
+    BufferStream(const uint8_t* d, size_t l) : data(d), len(l) {}
+    int available() const { return (int)(len - off); }
+    int read() { return off < len ? data[off++] : -1; }
+    const uint8_t* data;
+    size_t len;
+    size_t off = 0;
+  };
+
   int fd_;
   FrameReader reader_;
   uint8_t frame_[FRAME_MAX_DECODED];

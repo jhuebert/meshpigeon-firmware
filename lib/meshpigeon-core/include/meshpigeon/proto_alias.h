@@ -13,8 +13,22 @@
 #include "meshpigeon/device.pb.h"
 #include "meshpigeon/envelope.pb.h"
 #include "meshpigeon/radio.pb.h"
+#include "meshpigeon/protocol.h"
 
 namespace meshpigeon {
+
+// The frame cap is not headroom: it is the size of the largest envelope the
+// schema can produce (a Pong echoing a 500-byte Ping under a 5-byte id).
+// nanopb already computes that bound for both envelopes, so assert it here
+// rather than only pinning it with a runtime test: growing any field, cap
+// or oneof tag past the cap is then a BUILD failure instead of an answer
+// that vanishes on the device with no error the client can see.
+static_assert(meshpigeon_RadioToClient_size <= MESHPIGEON_MAX_FRAME_PAYLOAD,
+              "the largest response envelope no longer fits a frame; raise "
+              "MESHPIGEON_MAX_FRAME_PAYLOAD in the same commit");
+static_assert(meshpigeon_ClientToRadio_size <= MESHPIGEON_MAX_FRAME_PAYLOAD,
+              "the largest request envelope no longer fits a frame; raise "
+              "MESHPIGEON_MAX_FRAME_PAYLOAD in the same commit");
 
 using ClientToRadioMessage = meshpigeon_ClientToRadio;
 using RadioToClientMessage = meshpigeon_RadioToClient;
@@ -41,13 +55,6 @@ using ErrorCode = meshpigeon_Error_ErrorCode;
 #define RadioToClientMessage_init_zero meshpigeon_RadioToClient_init_zero
 #define ClientToRadioMessage_fields meshpigeon_ClientToRadio_fields
 #define RadioToClientMessage_fields meshpigeon_RadioToClient_fields
-
-// Per-response-body zero values. Each build_*() starts from these, so a body
-// field the builder (or a board hook) does not set reads as "unset" instead
-// of as whatever the previous response happened to leave in the union.
-#define RadioSettingsMessage_init_zero meshpigeon_RadioSettings_init_zero
-#define DeviceSettingsMessage_init_zero meshpigeon_DeviceSettings_init_zero
-#define StatusMessage_init_zero meshpigeon_Status_init_zero
 
 // The oneof variant discriminators, by operation.
 enum ClientOp : pb_size_t {

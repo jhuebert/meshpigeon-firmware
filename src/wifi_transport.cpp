@@ -112,7 +112,12 @@ void WifiTransport::start_server() {
 }
 
 void WifiTransport::stop_server() {
-  while (num_clients_ > 0) drop_client(num_clients_ - 1);
+  // Walk the slots, not the count. drop_client() no-ops on a free slot, and
+  // free slots exist: a client that disconnects leaves a hole behind, so
+  // "index num_clients_ - 1" is not the last live client and looping on it
+  // would spin forever on a hole — a board hang on the next settings
+  // change that tore the server down.
+  for (size_t i = 0; i < kMaxClients; i++) drop_client(i);
   if (server_ != nullptr) {
     server_->stop();
     delete server_;
@@ -172,12 +177,8 @@ void WifiTransport::pump_clients() {
   for (size_t i = 0; i < kMaxClients; i++) {
     Client& c = clients_[i];
     if (!c.in_use) continue;
-    uint32_t budget = FRAME_MAX_DRAIN_BYTES_PER_PUMP;
-    while (!c.broken && budget-- > 0 && c.client.available() > 0) {
-      size_t res = c.reader.feed((uint8_t)c.client.read(), c.frame);
-      if (res != 0 && res != (size_t)-1) {
-        proc_->on_envelope(c.frame, res, &c);
-      }
+    if (!c.broken) {
+      drain_frames(*proc_, c.reader, c.frame, &c, c.client);
     }
     if (c.broken || !c.client.connected()) {
       drop_client(i);
@@ -261,12 +262,15 @@ void WifiTransport::fill_status(StatusMessage* status) {
       break;
   }
   // The proto field is the *associated* SSID, empty when not associated —
-  // the configured one is what GetDeviceSettings already reports.
+  // the configured one is what GetDeviceSettings already reports, and the
+  // two are not the same thing once the driver has latched onto something
+  // other than what we asked for.
   status->wifi_ssid[0] = 0;
   status->wifi_port = port_;
   status->wifi_ipv4.size = 0;
   if (state_ == State::CONNECTED) {
-    strncpy(status->wifi_ssid, settings_.wifi_ssid,
+    const String associated = WiFi.SSID();
+    strncpy(status->wifi_ssid, associated.c_str(),
             sizeof(status->wifi_ssid) - 1);
     status->wifi_ssid[sizeof(status->wifi_ssid) - 1] = 0;
     IPAddress ip = WiFi.localIP();

@@ -54,9 +54,14 @@ message RadioSettings {
 // applied at once, and every OTHER connected client receives an async
 // RadioSettings (this message, id = 0). During the first 5 minutes after
 // boot only the FIRST accepted change is honored; later ones return
-// ERROR_CODE_BUSY (the first-owner lock, docs/radio-protocol.md §6.1).
+// ERROR_CODE_BUSY (the first-owner lock, docs/radio-protocol.md §6.1), as
+// does a retune attempted while a transmission is still keying up.
 message SetRadioSettings {
-  RadioSettings settings = 1;
+  // `optional` for the same reason every SetDeviceSettings field is: an
+  // absent submessage and an all-defaults one encode and decode identically
+  // otherwise, and only has_settings tells them apart. Without it there is
+  // no way to answer BAD_PAYLOAD for a request that carried no settings.
+  optional RadioSettings settings = 1;
 }
 
 // ---------------------------------------------------------------------------
@@ -83,8 +88,11 @@ message PacketAccepted {
 // up to max_count, one PacketEntry per COBS frame (each echoing the request's
 // id), terminated by a FetchEnd carrying the delivered count.
 message FetchPackets {
-  // Resume cursor: only entries with seq > since_seq are sent. Use
-  // StoreInfo.oldest_seq to start from the beginning.
+  // Resume cursor: only entries with seq > since_seq are sent, so the
+  // cursor is the last seq you received. 0 means "from the beginning" and
+  // stays valid for the life of the boot, since seq 0 is never assigned —
+  // do NOT start from StoreInfo.oldest_seq, which is the gap boundary and
+  // would skip the oldest entry still held.
   uint32 since_seq = 1;
 
   // Upper bound on entries delivered in this stream. The firmware clamps
@@ -96,7 +104,8 @@ message FetchPackets {
 
 // One retained packet: raw on-air bytes plus reception metadata. The firmware
 // cannot read the payload — raw is all it keeps (that is what maximizes
-// capacity, docs/radio-protocol.md §10).
+// capacity, docs/radio-protocol.md §10). Pushed live to every *authorized*
+// client, exactly like the gated FetchPackets it mirrors.
 message PacketEntry {
   // Monotonic store id; never reused across wraps or purges.
   uint32 seq = 1;

@@ -9,6 +9,13 @@
 
 namespace meshpigeon {
 
+/** The on-ring `flags` byte. The values live with the format they describe
+ *  rather than in whichever consumer happens to write them. */
+enum StoredPacketFlag : uint8_t {
+  kFlagSent = 0x01,      // keyed up by us via SendPacket
+  kFlagReceived = 0x02,  // received off the air
+};
+
 /**
  * One retained packet. Raw on-air bytes only — the firmware cannot read
  * them (no protocol, no keys), which is exactly what maximizes capacity.
@@ -25,7 +32,7 @@ struct StoredPacket {
   uint64_t uptime_ms;  // the monotonic 64-bit uptime clock (docs/radio-protocol.md §5.1)
   int8_t rssi;
   int8_t snr;
-  uint8_t flags;  // 0x01 = sent by us (TX), 0x02 = received
+  uint8_t flags;  // a StoredPacketFlag bit
   uint8_t len;
   uint8_t raw[MESHPIGEON_MAX_RAW_PACKET];
 };
@@ -87,8 +94,10 @@ class PacketStore {
 
   /** Forget the retained packets. Sequence numbers do NOT restart, so a
    *  client's `since_seq` cursor stays valid; `dropped` deliberately
-   *  survives, because it is a device-lifetime health counter rather than
-   *  part of the history being cleared. */
+   *  survives a purge, because it counts overflow rather than describing
+   *  the history being cleared. It is still a per-boot counter like the
+   *  rest of the RAM store — a reboot clears it along with everything
+   *  else here. */
   void clear() {
     head_off_ = 0;
     tail_off_ = 0;

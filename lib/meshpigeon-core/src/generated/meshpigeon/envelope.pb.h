@@ -19,8 +19,8 @@ typedef enum _meshpigeon_Error_ErrorCode {
     /* Wrong size/format/validation; the request was rejected atomically —
  nothing was applied. */
     meshpigeon_Error_ErrorCode_ERROR_CODE_BAD_PAYLOAD = 2,
-    /* TX in flight, the first-owner lock is active, or the packet store
- could not take the packet. */
+    /* TX in flight (a SendPacket or a re-tune), the first-owner lock is
+ active, or the packet store could not take the packet. */
     meshpigeon_Error_ErrorCode_ERROR_CODE_BUSY = 3,
     /* The radio refused or failed the transmission. */
     meshpigeon_Error_ErrorCode_ERROR_CODE_TX_FAILED = 4,
@@ -109,14 +109,16 @@ typedef struct _meshpigeon_RadioToClient {
         /* SEND_PACKET response (async TxResult follows). */
         meshpigeon_PacketAccepted packet_accepted;
         /* One stored packet: async live push (id = 0) while connected, or a
-     FetchPackets stream item (request's id). */
+     FetchPackets stream item (request's id). The push reaches only
+     authorized connections, since FetchPackets is auth-gated. */
         meshpigeon_PacketEntry packet_entry;
         /* Terminates a FetchPackets stream (request's id). */
         meshpigeon_FetchEnd fetch_end;
         /* Async SEND_PACKET outcome (id = 0). */
         meshpigeon_TxResult tx_result;
         /* GET/SET_DEVICE_SETTINGS response. The async "another client changed
-     settings" push is this same message with id = 0. */
+     settings" push is this same message with id = 0, and reaches only
+     authorized connections: the read model carries the Wi-Fi passphrase. */
         meshpigeon_DeviceSettings device_settings;
         /* GET_STATUS response. The async Wi-Fi state-transition push is this
      same message with id = 0. */

@@ -11,6 +11,7 @@
 #include <Arduino.h>
 
 #include "meshpigeon/command_processor.h"
+#include "meshpigeon/framing.h"
 #include "meshpigeon/packet_store.h"
 #include "meshpigeon/settings.h"
 #include "meshpigeon/uptime_clock.h"
@@ -325,17 +326,24 @@ class BoardSettingsStore : public SettingsStore {
     f.close();
   }
 
-  // Device settings in one fixed-layout file; the length check keeps a
-  // truncated write from loading garbage.
+  // Device settings in one fixed-layout file, with the same version byte and
+  // trailing CRC16 RadioSettings uses. A short write is caught by the length
+  // check; this catches the rest, and it has to: the blob carries the PIN and
+  // the Wi-Fi passphrase, so a bad read must fall back to defaults rather
+  // than load a half-valid credential.
   bool save_device(const DeviceSettings& s) override {
     DevBlob b;
     memset(&b, 0, sizeof(b));
+    b.version = kDevBlobVersion;
     memcpy(b.name, s.name, sizeof(b.name) - 1);
     memcpy(b.pin, s.pin, sizeof(b.pin) - 1);
     b.wifi_enabled = s.wifi_enabled ? 1 : 0;
     memcpy(b.wifi_ssid, s.wifi_ssid, sizeof(b.wifi_ssid) - 1);
     memcpy(b.wifi_password, s.wifi_password, sizeof(b.wifi_password) - 1);
     b.wifi_port = s.wifi_port;
+    uint16_t crc = 0;
+    crc16_ccitt(&crc, (const uint8_t*)&b, sizeof(b) - 2);
+    b.crc = crc;
     InternalFS.begin();
     InternalFS.remove("/dev.bin");  // FILE_O_WRITE appends, no truncate
     Adafruit_LittleFS_Namespace::File f("dev.bin",
@@ -356,6 +364,12 @@ class BoardSettingsStore : public SettingsStore {
     int n = f.read((uint8_t*)&b, sizeof(b));
     f.close();
     if (n != (int)sizeof(b)) return false;
+    if (b.version != kDevBlobVersion) return false;
+    uint16_t stored = b.crc;
+    b.crc = 0;
+    uint16_t crc = 0;
+    crc16_ccitt(&crc, (const uint8_t*)&b, sizeof(b) - 2);
+    if (crc != stored) return false;
     b.name[sizeof(b.name) - 1] = 0;
     b.pin[sizeof(b.pin) - 1] = 0;
     b.wifi_ssid[sizeof(b.wifi_ssid) - 1] = 0;
@@ -378,13 +392,16 @@ class BoardSettingsStore : public SettingsStore {
   }
 
  private:
+  static const uint8_t kDevBlobVersion = 1;
   struct DevBlob {
+    uint8_t version;
     char name[MESHPIGEON_NAME_MAX + 1];
     char pin[MESHPIGEON_PIN_MAX + 1];
     uint8_t wifi_enabled;
     char wifi_ssid[MESHPIGEON_SSID_MAX + 1];
     char wifi_password[MESHPIGEON_PASS_MAX + 1];
     uint16_t wifi_port;
+    uint16_t crc;  // CRC16 over every byte before it
   };
 };
 #endif
@@ -462,13 +479,18 @@ void setup() {
   // leaves a device that answers, with radio_ok = false.
   g_processor->boot();
 
-  char effective[MESHPIGEON_NAME_MAX + 1];
-  g_processor->effective_name(effective);
-
   g_usb.begin(*g_processor);  // sets the back-pointer; add_sink() alone leaves proc_ null
   // transports.h defines the platform's BLE sink class.
   g_ble = new BleSink();
-  g_ble->begin(*g_processor, effective);
+  // BLE before the name, never after: the derived default is built from the
+  // BLE address, and on both families that address does not exist until the
+  // stack is up (NimBLEDevice::init() on ESP32, Bluefruit.begin() on nRF52).
+  // Asking first would advertise MeshPigeon-0000 — and, on nRF52, a name
+  // with no suffix at all (docs/radio-protocol.md §8.3).
+  char effective[MESHPIGEON_NAME_MAX + 1];
+  g_ble->begin(*g_processor);
+  g_processor->effective_name(effective);
+  g_ble->set_name(effective);
 #if defined(MESHPIGEON_HAS_WIFI)
   g_wifi = new WifiTransport();
   char hostname[24];

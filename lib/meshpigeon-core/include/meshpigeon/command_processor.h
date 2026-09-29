@@ -38,7 +38,7 @@ class ILoRaRadio {
 
 /** How many Capability values DeviceInfo can carry — the generated
  *  `capabilities` array size (device.options caps it at the same number). */
-static const pb_size_t kMaxCapabilities = 16;
+static constexpr pb_size_t kMaxCapabilities = 16;
 
 /** Board capability values (DeviceInfo.capabilities), assembled from board
  *  defines — compile-time facts, never probed at runtime. */
@@ -162,7 +162,10 @@ class CommandProcessor {
   size_t sink_count() const { return num_sinks_; }
   size_t sink_free() const { return kMaxSinks - num_sinks_; }
 
-  /** The effective name: stored, else "MeshPigeon-XXXX" from the MAC (§8.3). */
+  /** The effective name: stored, else "MeshPigeon-XXXX" from the MAC (§8.3).
+   *  Callers must have brought the BLE stack up first: the suffix is the
+   *  BLE address, and on both board families that address does not exist
+   *  until the transport has been initialized. */
   void effective_name(char out[MESHPIGEON_NAME_MAX + 1]) const;
 
  private:
@@ -186,7 +189,9 @@ class CommandProcessor {
   void deliver(IFrameSink* to);
   /** Push response_ to every sink but `except`. `authorized_only` restricts
    *  it to connections that could call the gated operations — required for
-   *  the DeviceSettings push, which carries the Wi-Fi passphrase. */
+   *  the two pushes that carry protected material: the DeviceSettings read
+   *  model (the Wi-Fi passphrase) and the live PacketEntry (the raw mesh
+   *  bytes FetchPackets is gated behind). */
   void broadcast_response(IFrameSink* except, bool authorized_only = false);
 
   void send_error(uint32_t id, ErrorCode code, IFrameSink* to);
@@ -207,8 +212,6 @@ class CommandProcessor {
   void notify_radio_changed(IFrameSink* except);
   void notify_device_settings_changed(IFrameSink* except);
 
-  void build_name(const DeviceSettings& s,
-                  char out[MESHPIGEON_NAME_MAX + 1]) const;
   bool first_owner_lock_active() const;
   PacketStore& store_;
   UptimeClock& clock_;
@@ -240,9 +243,11 @@ class CommandProcessor {
   RadioToClientMessage response_;
 
   // One sink per connection, shared by every transport (docs/radio-protocol.md
-  // §7). Sized so an ESP32 board can hold USB + BLE + the documented four
-  // TCP clients at once; the nRF52 boards only ever use two of them.
-  static const size_t kMaxSinks = 6;
+  // §7). Sized so an ESP32 board can hold USB CDC + the three BLE centrals
+  // BleSink admits + the four TCP clients the doc promises, all at once;
+  // the nRF52 boards only ever use two of them. A transport that runs out
+  // turns the client away, so this is a ceiling, never a queue.
+  static const size_t kMaxSinks = 8;
   IFrameSink* sinks_[kMaxSinks];
   size_t num_sinks_ = 0;
 };

@@ -7,6 +7,7 @@
 #include <WiFi.h>
 
 #include "meshpigeon/command_processor.h"
+#include "meshpigeon/frame_drain.h"
 #include "meshpigeon/framing.h"
 
 namespace meshpigeon {
@@ -99,6 +100,9 @@ class WifiTransport {
   uint32_t backoff_ms_ = 0;
 
   static const size_t kMaxClients = 4;  // the documented TCP cap (§7)
+  // Fixed slots, not a packed list: a client that leaves leaves a hole
+  // behind, so every walk over the array must go by index, never by
+  // "the i-th live client" (see stop_server).
   Client clients_[kMaxClients];
   size_t num_clients_ = 0;
 };

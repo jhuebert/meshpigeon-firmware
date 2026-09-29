@@ -111,9 +111,13 @@ class FrameReader {
    * Feed one wire byte. If a complete frame is available after this call,
    * `frame_out` (must hold FRAME_MAX_DECODED) receives the decoded envelope
    * — the CRC is verified but not included — and the function returns its
-   * length; returns 0 otherwise; returns (size_t)-1 if a frame was received
-   * but dropped (CRC/decode failure, a body too long for `frame_out`, or
-   * overflow).
+   * length; returns 0 otherwise. Returns (size_t)-1 when a frame was
+   * complete but unusable (CRC or decode failure, a body too long for
+   * `frame_out`).
+   *
+   * A body longer than the reader's wire buffer is different: the reader
+   * throws the bytes away and returns 0, because there is no complete
+   * frame to report on — only the next delimiter ends the overrun.
    */
   size_t feed(uint8_t byte, uint8_t* frame_out);
 

@@ -52,8 +52,13 @@ typedef struct _meshpigeon_RadioSettings {
  applied at once, and every OTHER connected client receives an async
  RadioSettings (this message, id = 0). During the first 5 minutes after
  boot only the FIRST accepted change is honored; later ones return
- ERROR_CODE_BUSY (the first-owner lock, docs/radio-protocol.md §6.1). */
+ ERROR_CODE_BUSY (the first-owner lock, docs/radio-protocol.md §6.1), as
+ does a retune attempted while a transmission is still keying up. */
 typedef struct _meshpigeon_SetRadioSettings {
+    /* `optional` for the same reason every SetDeviceSettings field is: an
+ absent submessage and an all-defaults one encode and decode identically
+ otherwise, and only has_settings tells them apart. Without it there is
+ no way to answer BAD_PAYLOAD for a request that carried no settings. */
     bool has_settings;
     meshpigeon_RadioSettings settings;
 } meshpigeon_SetRadioSettings;
@@ -79,8 +84,11 @@ typedef struct _meshpigeon_PacketAccepted {
  up to max_count, one PacketEntry per COBS frame (each echoing the request's
  id), terminated by a FetchEnd carrying the delivered count. */
 typedef struct _meshpigeon_FetchPackets {
-    /* Resume cursor: only entries with seq > since_seq are sent. Use
- StoreInfo.oldest_seq to start from the beginning. */
+    /* Resume cursor: only entries with seq > since_seq are sent, so the
+ cursor is the last seq you received. 0 means "from the beginning" and
+ stays valid for the life of the boot, since seq 0 is never assigned —
+ do NOT start from StoreInfo.oldest_seq, which is the gap boundary and
+ would skip the oldest entry still held. */
     uint32_t since_seq;
     /* Upper bound on entries delivered in this stream. The firmware clamps
  this to a per-request cap (it streams straight out of the sink, and a
@@ -92,7 +100,8 @@ typedef struct _meshpigeon_FetchPackets {
 typedef PB_BYTES_ARRAY_T(255) meshpigeon_PacketEntry_raw_t;
 /* One retained packet: raw on-air bytes plus reception metadata. The firmware
  cannot read the payload — raw is all it keeps (that is what maximizes
- capacity, docs/radio-protocol.md §10). */
+ capacity, docs/radio-protocol.md §10). Pushed live to every *authorized*
+ client, exactly like the gated FetchPackets it mirrors. */
 typedef struct _meshpigeon_PacketEntry {
     /* Monotonic store id; never reused across wraps or purges. */
     uint32_t seq;

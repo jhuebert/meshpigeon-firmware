@@ -101,11 +101,16 @@ message StoreInfo {
   uint32 capacity_bytes = 2;
 
   // Packets evicted by overflow (or dropped for exceeding the whole budget).
+  // Survives PurgeStore — it counts overflow, not history — but, like the
+  // rest of the store, it is per boot.
   uint32 dropped = 3;
 
-  // First retained seq, or the next seq to be assigned when empty. The
-  // baseline for a fresh FetchPackets cursor. Monotonic within a boot;
-  // restarts after a reboot (the store is RAM-only).
+  // First retained seq — the *gap boundary*: anything below it has been
+  // evicted and can never be fetched again, so a client compares against it
+  // to notice a gap. It is NOT a cursor to start from: FetchPackets.since_seq
+  // is exclusive, so starting there would skip the oldest entry still held
+  // (use since_seq = 0 for "everything"). Monotonic within a boot; restarts
+  // after a reboot (the store is RAM-only).
   uint32 oldest_seq = 4;
 }
 
@@ -169,7 +174,8 @@ message SetDeviceSettings {
   // public default "0000" (knowable without any documentation, like every
   // Bluetooth device's default); setting a value here replaces it. There is
   // no "no PIN" state. Empty string restores the default; absent =
-  // unchanged.
+  // unchanged. A successful write authorizes THIS connection (it proved it
+  // knows the new PIN by writing it) and de-authorizes every other one.
   optional string pin = 2;
 
   optional bool wifi_enabled = 3;
@@ -207,14 +213,18 @@ message Status {
 
   WifiState wifi_state = 1;
 
-  // Currently associated SSID; empty when not connected.
+  // Currently associated SSID; empty when not connected. This is what the
+  // driver latched onto, which is not always what is configured —
+  // GetDeviceSettings reports the configured one.
   string wifi_ssid = 2;
 
   // Station IPv4 address in network byte order, 4 bytes; zeroed when not
   // connected.
   bytes wifi_ipv4 = 3;
 
-  // Port the TCP server listens on.
+  // Configured TCP port (0 on boards with no Wi-Fi). The listener only runs
+  // while associated, so this is the port to dial, not a promise that
+  // something is currently listening.
   uint32 wifi_port = 4;
 
   // AP signal in dBm; 0 = unknown. Changes are NOT pushed — poll if wanted.

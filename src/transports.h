@@ -10,6 +10,7 @@
 #endif
 
 #include "meshpigeon/command_processor.h"
+#include "meshpigeon/frame_drain.h"
 #include "meshpigeon/framing.h"
 
 namespace meshpigeon {
@@ -34,15 +35,7 @@ class UsbCdcSink : public IFrameSink {
 
   /** Board loop: drain incoming bytes into frames, bounded per tick so one
    *  chatty client cannot own the loop (FRAME_MAX_DRAIN_BYTES_PER_PUMP). */
-  void pump() {
-    uint32_t budget = FRAME_MAX_DRAIN_BYTES_PER_PUMP;
-    while (budget-- > 0 && Serial.available() > 0) {
-      size_t res = reader_.feed((uint8_t)Serial.read(), frame_);
-      if (res != 0 && res != (size_t)-1) {
-        proc_->on_envelope(frame_, res, this);
-      }
-    }
-  }
+  void pump() { drain_frames(*proc_, reader_, frame_, this, Serial); }
 
  private:
   CommandProcessor* proc_ = NULL;
@@ -58,22 +51,40 @@ static const BLEUUID kNusNotifyCharUUID("6E400003-B5A3-F393-E0A9-E50E24DCCA9E");
 
 /**
  * BLE transport (Nordic-UART-Service-compatible so generic tools work).
- * Supports multiple connected centrals (docs/radio-protocol.md §1); each connection gets its
- * own FrameReader, but they share one sink — notifications go to every
- * subscriber, and auth state is per-*transport* (one BLE link, one serial
- * console), not per-central.
+ * Supports multiple connected centrals (docs/radio-protocol.md §1).
+ *
+ * Each central is a *connection*, not just a subscriber: it owns its own
+ * FrameReader, its own auth flag and its own sink slot. That matters for
+ * the PIN — a shared sink would let a second central connect mid-session and
+ * inherit a session the first one authenticated, so "auth is per
+ * connection" would quietly be false on the one transport that accepts
+ * strangers without a password (docs/radio-protocol.md §8.2). Outbound
+ * frames still fan out to every central, so one push is one serialization
+ * either way.
  */
-class BleSink : public IFrameSink, public NimBLEServerCallbacks,
+class BleSink : public NimBLEServerCallbacks,
                 public NimBLECharacteristicCallbacks {
  public:
-  /** `name` is the effective device name: the stored name, else the derived
-   *  "MeshPigeon-XXXX" (docs/radio-protocol.md §8.3). The core owns that
-   *  derivation — the transport must not compute the suffix a second time. */
-  void begin(CommandProcessor& proc, const char* name) {
+  /** How many centrals this transport admits. Along with USB CDC and the
+   *  four documented TCP clients it fills CommandProcessor's shared sink
+   *  registry exactly, so the two limits can never disagree. */
+  static const size_t kMaxCentrals = 3;
+
+  /**
+   * Bring the BLE stack up and publish the NUS service.
+   *
+   * The device name is NOT taken here and advertising does not start until
+   * set_name() runs: the derived default name is built from the BLE address
+   * (docs/radio-protocol.md §8.3), and on every board that address does not
+   * exist until this function has initialized the stack. Naming first would
+   * advertise MeshPigeon-0000. So the board brings BLE up, asks the core
+   * for the effective name, and hands it back — and this is the only place
+   * a name is ever set, for the first advertisement and for every rename
+   * alike.
+   */
+  void begin(CommandProcessor& proc) {
     proc_ = &proc;
-    if (!proc_->add_sink(this)) return;  // registry full: nothing to serve
-    NimBLEDevice::init(name);
-    NimBLEDevice::setDeviceName(name);
+    NimBLEDevice::init("");  // the real name is applied by set_name()
     server_ = NimBLEDevice::createServer();
     server_->setCallbacks(this);
     NimBLEService* svc = server_->createService(kNusServiceUUID);
@@ -83,25 +94,27 @@ class BleSink : public IFrameSink, public NimBLEServerCallbacks,
     rx_char_->setCallbacks(this);
     svc->start();
     server_->getAdvertising()->addServiceUUID(kNusServiceUUID);
-    server_->getAdvertising()->start();
   }
 
   // NimBLEServerCallbacks (1.4.x signatures)
   void onConnect(NimBLEServer* server, ble_gap_conn_desc* desc) override {
-    (void)server;
-    PerConn c;
-    c.handle = desc->conn_handle;
-    conns_.push_back(c);
+    if (claim(desc->conn_handle) == NULL) {
+      // No room: the sink registry is shared with every transport, and a
+      // connected central nothing will ever be sent to is worse than no
+      // connection at all. Turn it away rather than queue it.
+      server->disconnect(desc->conn_handle);
+    }
   }
   void onDisconnect(NimBLEServer* server, ble_gap_conn_desc* desc) override {
-    // The state goes with the connection. Each PerConn carries a FrameReader
-    // and a frame buffer (~1 KB), so leaving them behind would grow the heap
-    // by that much per connect/disconnect cycle for the life of the boot.
-    for (size_t i = 0; i < conns_.size(); i++) {
-      if (conns_[i].handle == desc->conn_handle) {
-        conns_.erase(conns_.begin() + i);
-        break;
-      }
+    (void)server;
+    // The state goes with the connection. Each Connection carries a
+    // FrameReader and a frame buffer (~1 KB) plus the auth flag, so
+    // releasing the slot releases all of it — a session that authenticated
+    // must not outlive the link it authenticated on.
+    Connection* c = find(desc->conn_handle);
+    if (c != NULL) {
+      if (proc_ != NULL) proc_->remove_sink(c);
+      c->in_use = false;
     }
     server->getAdvertising()->start();
   }
@@ -110,67 +123,97 @@ class BleSink : public IFrameSink, public NimBLEServerCallbacks,
   void onWrite(NimBLECharacteristic* ch, ble_gap_conn_desc* desc) override {
     (void)desc;
     NimBLEAttValue v = ch->getValue();
-    PerConn& c = reader_for(desc ? desc->conn_handle : 0);
+    Connection* c = desc == NULL ? NULL : find(desc->conn_handle);
+    if (c == NULL) return;  // a link we have already dropped
     for (size_t i = 0; i < v.length(); i++) {
-      size_t res = c.reader.feed(v.data()[i], c.frame);
+      size_t res = c->reader.feed(v.data()[i], c->frame);
       if (res != 0 && res != (size_t)-1) {
-        proc_->on_envelope(c.frame, res, this);
+        proc_->on_envelope(c->frame, res, c);
       }
     }
   }
 
-  // IFrameSink: notify every connected central. Chunk at the BLE-default
-  // MTU (23 - 3 = 20) so it works before MTU exchange; NimBLE splits per
-  // connection otherwise.
-  void send_frame(const uint8_t* decoded, size_t len) override {
-    uint8_t wire[FRAME_MAX_WIRE];
-    size_t n = frame_encode_envelope(wire, decoded, len);
-    size_t off = 0;
-    while (off < n) {
-      size_t chunk = min(n - off, (size_t)20);
-      tx_char_->notify(&wire[off], chunk);
-      off += chunk;
-    }
+  /** Apply the effective device name and start advertising. Called once
+   *  after boot and again on every rename (§8.3). Live connections are
+   *  unaffected; scanners see the new name at the next advertising round. */
+  void set_name(const char* name) {
+    if (server_ == NULL) return;
+    NimBLEDevice::setDeviceName(name);
+    // The name has to go into the advertising payload too, not only into
+    // the GAP database, or a scanner that has never connected never sees it.
+    server_->getAdvertising()->setName(name);
+    server_->getAdvertising()->start();
   }
 
   /** Board loop: RX is callback-driven and TX immediate — nothing to do. */
   void pump() {}
 
-  /** Apply a device-settings name: rename and re-advertise (docs/radio-protocol.md §8.3).
-   *  Live connections are unaffected; scanners see the new name. */
-  void set_name(const char* name) {
-    if (server_ == NULL) return;
-    NimBLEDevice::setDeviceName(name);
-    server_->getAdvertising()->start();
+  /** Connected centrals, for Status.ble_clients. */
+  uint8_t ble_clients() {
+    size_t n = 0;
+    for (size_t i = 0; i < kMaxCentrals; i++) {
+      if (conns_[i].in_use) n++;
+    }
+    return (uint8_t)n;
   }
 
-  /** Connected centrals, for Status.ble_clients. */
-  uint8_t ble_clients() { return (uint8_t)conns_.size(); }
-
  private:
-  struct PerConn {
+  /** One connected central: the connection, and therefore the sink. */
+  class Connection : public IFrameSink {
+   public:
+    // Chunk at the BLE-default MTU (23 - 3 = 20) so it works before MTU
+    // exchange; NimBLE splits per connection otherwise. Every attached
+    // central gets every frame.
+    void send_frame(const uint8_t* decoded, size_t len) override {
+      uint8_t wire[FRAME_MAX_WIRE];
+      size_t n = frame_encode_envelope(wire, decoded, len);
+      size_t off = 0;
+      while (off < n) {
+        size_t chunk = min(n - off, (size_t)20);
+        notify_->notify(&wire[off], chunk);
+        off += chunk;
+      }
+    }
+
+    NimBLECharacteristic* notify_ = nullptr;  // the shared NUS TX char
     uint16_t handle = 0;
+    bool in_use = false;
     FrameReader reader;
     uint8_t frame[FRAME_MAX_DECODED];
   };
 
-  PerConn& reader_for(uint16_t handle) {
-    for (PerConn& c : conns_) {
-      if (c.handle == handle) return c;
+  Connection* find(uint16_t handle) {
+    for (size_t i = 0; i < kMaxCentrals; i++) {
+      if (conns_[i].in_use && conns_[i].handle == handle) return &conns_[i];
     }
-    PerConn c;
-    c.handle = handle;
-    conns_.push_back(c);
-    return conns_.back();
+    return NULL;
+  }
+
+  /** Take the first free slot and register it as a sink. NULL when the sink
+   *  registry is full, which is the caller's cue to drop the central. */
+  Connection* claim(uint16_t handle) {
+    for (size_t i = 0; i < kMaxCentrals; i++) {
+      if (conns_[i].in_use) continue;
+      if (proc_ != NULL && !proc_->add_sink(&conns_[i])) return NULL;
+      conns_[i].handle = handle;
+      conns_[i].in_use = true;
+      conns_[i].authenticated = false;
+      conns_[i].notify_ = tx_char_;
+      conns_[i].reader.reset();
+      return &conns_[i];
+    }
+    return NULL;
   }
 
   CommandProcessor* proc_ = NULL;
   NimBLEServer* server_ = NULL;
   NimBLECharacteristic* tx_char_ = nullptr;
   NimBLECharacteristic* rx_char_ = nullptr;
-  // One entry per connected central: the handle plus the frame state that
-  // belongs to it. A single vector, so the two cannot fall out of step.
-  std::vector<PerConn> conns_;
+  // A fixed array, not a vector: the core's sink registry holds pointers
+  // into it, and a reallocation would leave every registered connection
+  // dangling. Slots are reused, so a connect/disconnect cycle costs no
+  // heap and cannot leak the ~1 KB of per-connection frame state.
+  Connection conns_[kMaxCentrals];
 };
 
 #elif defined(MESHPIGEON_NRF52)
@@ -194,16 +237,16 @@ static const uint16_t kAdvFastTimeout = 30;  // seconds
  */
 class BleSink : public IFrameSink {
  public:
-  /** `name` is the effective device name: the stored name, else the derived
-   *  "MeshPigeon-XXXX" (docs/radio-protocol.md §8.3). The core owns that
-   *  derivation — the transport must not compute the suffix a second time. */
-  void begin(CommandProcessor& proc, const char* name) {
+  /** Bring the BLE stack up and join the sink registry. The name and the
+   *  advertising start are deliberately not here — see the ESP32 twin's
+   *  begin() for why (the derived name needs the BLE address, which does
+   *  not exist until Bluefruit.begin() has run). */
+  void begin(CommandProcessor& proc) {
     proc_ = &proc;
     self_ = this;
     if (!proc_->add_sink(this)) return;  // registry full: nothing to serve
     Bluefruit.configPrphBandwidth(BANDWIDTH_MAX);
     Bluefruit.begin();
-    Bluefruit.setName(name);
     Bluefruit.Periph.setConnectCallback(on_connect);
     Bluefruit.Periph.setDisconnectCallback(on_disconnect);
     bleuart.begin();
@@ -213,20 +256,12 @@ class BleSink : public IFrameSink {
     Bluefruit.Advertising.setInterval(kAdvIntervalMin, kAdvIntervalMax);
     Bluefruit.Advertising.setFastTimeout(kAdvFastTimeout);
     Bluefruit.Advertising.restartOnDisconnect(true);
-    Bluefruit.Advertising.start(0);
   }
 
-  /** Board loop: drain BLE RX into frames, then TX queue into notifications.
-   *  The RX drain is bounded per tick (FRAME_MAX_DRAIN_BYTES_PER_PUMP) so a
-   *  chatty central cannot own the loop. */
+  /** Board loop: drain BLE RX into frames, then the TX queue into
+   *  notifications. */
   void pump() {
-    uint32_t budget = FRAME_MAX_DRAIN_BYTES_PER_PUMP;
-    while (budget-- > 0 && bleuart.available() > 0) {
-      size_t res = reader_.feed((uint8_t)bleuart.read(), frame_);
-      if (res != 0 && res != (size_t)-1) {
-        proc_->on_envelope(frame_, res, this);
-      }
-    }
+    drain_frames(*proc_, reader_, frame_, this, bleuart);
     if (drop_pending_) {
       drop_pending_ = false;
       head_ = 0;
@@ -238,6 +273,10 @@ class BleSink : public IFrameSink {
   // IFrameSink: enqueue for the board loop (never writes from a callback
   // thread). Bounded wait when full — see make_room().
   void send_frame(const uint8_t* decoded, size_t len) override {
+    // Nobody to notify: drop it rather than queue it. A frame left in the
+    // queue with no central attached would sit there until one connects and
+    // then be delivered as a stale push into that central's session.
+    if (!connected()) return;
     uint8_t wire[FRAME_MAX_WIRE];
     size_t n = frame_encode_envelope(wire, decoded, len);
     make_room();
@@ -249,8 +288,9 @@ class BleSink : public IFrameSink {
     count_++;
   }
 
-  /** Apply a device-settings name: rename and re-advertise (docs/radio-protocol.md §8.3).
-   *  Live connections are unaffected; scanners see the new name. */
+  /** Apply the effective device name and start advertising: the initial
+   *  name after boot and every rename alike (§8.3). Live connections are
+   *  unaffected; scanners see the new name at the next advertising round. */
   void set_name(const char* name) {
     Bluefruit.setName(name);
     Bluefruit.Advertising.start(0);

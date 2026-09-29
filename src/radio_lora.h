@@ -24,6 +24,13 @@ template <class Radio, class Traits>
 class LoraRadioBase : public ILoRaRadio {
  public:
   bool apply(const RadioSettings& s) override {
+    // Refuse rather than re-tune mid-TX. `standby()` below would abort the
+    // transmission on the silicon, and nothing would ever see kIrqTxDone
+    // again: the port would report "still transmitting" until the board was
+    // power-cycled, and the core's one-TX-at-a-time lock would never clear.
+    // The core already rejects a retune while a send is in flight; this is
+    // the port refusing to corrupt its own state machine.
+    if (tx_started_) return false;
     last_settings_ = s;
     int state = radio_.standby();
     if (state != RADIOLIB_ERR_NONE) return false;

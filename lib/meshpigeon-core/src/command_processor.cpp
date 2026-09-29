@@ -9,8 +9,6 @@
 namespace meshpigeon {
 
 static const uint32_t kFirstOwnerGraceMs = 5 * 60 * 1000;  // docs/radio-protocol.md §6.1
-static const uint8_t kFlagsSent = 0x01;
-static const uint8_t kFlagsReceived = 0x02;
 static const uint8_t kAuthFailsBeforeDelay = 3;
 static const uint32_t kAuthFailDelayMs = 1000;
 static const char kDefaultNamePrefix[] = "MeshPigeon-";
@@ -52,10 +50,10 @@ void CommandProcessor::remove_sink(IFrameSink* sink) {
   }
 }
 
-void CommandProcessor::build_name(
-    const DeviceSettings& s, char out[MESHPIGEON_NAME_MAX + 1]) const {
-  if (s.name[0] != 0) {
-    memcpy(out, s.name, MESHPIGEON_NAME_MAX);
+void CommandProcessor::effective_name(
+    char out[MESHPIGEON_NAME_MAX + 1]) const {
+  if (device_.name[0] != 0) {
+    memcpy(out, device_.name, MESHPIGEON_NAME_MAX);
     out[MESHPIGEON_NAME_MAX] = 0;
     return;
   }
@@ -63,11 +61,6 @@ void CommandProcessor::build_name(
   if (hooks_) hooks_->mac_suffix(suffix);
   suffix[4] = 0;
   snprintf(out, MESHPIGEON_NAME_MAX + 1, "%s%s", kDefaultNamePrefix, suffix);
-}
-
-void CommandProcessor::effective_name(
-    char out[MESHPIGEON_NAME_MAX + 1]) const {
-  build_name(device_, out);
 }
 
 bool CommandProcessor::boot() {
@@ -78,6 +71,7 @@ bool CommandProcessor::boot() {
   // (avoid flash wear until an app tunes us); a later apply() is what writes.
   RadioSettings stored = RadioSettings::unset();
   settings_ = RadioSettings::unset();
+  set_count_since_boot_ = 0;
   if (settings_store_.load(&stored)) settings_ = stored;
   // A false load means "never written": the store hands back the defaults.
   settings_store_.load_device(&device_);
@@ -141,10 +135,10 @@ void CommandProcessor::broadcast_response(IFrameSink* except,
   if (len == 0) return;
   for (size_t i = 0; i < num_sinks_; i++) {
     if (sinks_[i] == NULL || sinks_[i] == except) continue;
-    // `authorized_only` is for the one push that carries a credential: a
-    // broadcast is not an operation, so without it a stranger who merely
-    // attached a socket would collect the Wi-Fi passphrase from every
-    // rename (docs/radio-protocol.md §8.3).
+    // `authorized_only` is for the two pushes that carry protected material:
+    // a broadcast is not an operation, so without it a stranger who merely
+    // attached a socket would collect the Wi-Fi passphrase from every rename
+    // and every packet off the air (docs/radio-protocol.md §8.3, §10).
     if (authorized_only && !is_authorized(sinks_[i])) continue;
     sinks_[i]->send_frame(buf, len);
   }
@@ -166,7 +160,7 @@ void CommandProcessor::build_radio_settings() {
 void CommandProcessor::build_device_settings() {
   response_.which_body = meshpigeon_RadioToClient_device_settings_tag;
   DeviceSettingsMessage& m = response_.body.device_settings;
-  build_name(device_, m.name);
+  effective_name(m.name);
   m.wifi_enabled = device_.wifi_enabled;
   strncpy(m.wifi_ssid, device_.wifi_ssid, sizeof(m.wifi_ssid) - 1);
   m.wifi_ssid[sizeof(m.wifi_ssid) - 1] = 0;
@@ -199,7 +193,7 @@ void CommandProcessor::build_packet_entry(uint32_t id, const StoredPacket& e) {
   response_.body.packet_entry.rssi = e.rssi;
   response_.body.packet_entry.snr = e.snr;
   response_.body.packet_entry.origin =
-      (e.flags & kFlagsSent)
+      (e.flags & kFlagSent)
           ? meshpigeon_PacketEntry_Origin_ORIGIN_SENT
           : meshpigeon_PacketEntry_Origin_ORIGIN_RECEIVED;
 }
@@ -367,9 +361,11 @@ void CommandProcessor::handle_request(const ClientToRadioMessage& req,
         return;
       }
       const RadioSettingsMessage& m = req.body.set_radio_settings.settings;
-      RadioSettings s;
-      s.version = RadioSettings::kSerializedVersion;
-      s.region = 0;  // the region-preset concept is gone (docs/radio-protocol.md §6)
+      // Start from a fully-initialized struct: the radio port keeps its own
+      // copy of what it is handed, and this one is persisted. The region
+      // preset the v1 layout carried is gone, so unset()'s region 0 is what
+      // a new write always carries (docs/radio-protocol.md §6).
+      RadioSettings s = RadioSettings::unset();
       s.freq_hz = m.freq_hz;
       // Plain Hz on the wire, 0.01 kHz units internally (10 Hz steps). The
       // conversion has to be validated on the wire value, not the truncated
@@ -391,8 +387,14 @@ void CommandProcessor::handle_request(const ClientToRadioMessage& req,
       s.sf = (uint8_t)m.sf;
       s.cr = (uint8_t)m.cr;
       s.power_dbm = (uint8_t)m.power_dbm;
-      s.config_epoch = settings_.config_epoch;
-      if (first_owner_lock_active()) {
+      if (first_owner_lock_active() || tx_pending_) {
+        // §6.1: within the grace window only the first-connected client owns
+        // the tuning decision. §4: a retune while the radio is keying up is
+        // BUSY for the same reason a second send is — and here it is not
+        // merely politeness. The tuning sequence puts the part in standby,
+        // which aborts the transmission on the silicon, so the in-flight
+        // TX would never complete and every later SendPacket would answer
+        // BUSY until the board was power-cycled. Refuse instead.
         send_error(req.id, meshpigeon_Error_ErrorCode_ERROR_CODE_BUSY, from);
         return;
       }
@@ -406,7 +408,7 @@ void CommandProcessor::handle_request(const ClientToRadioMessage& req,
         return;
       }
       radio_ok_ = true;  // it just accepted a tuning: the air is usable
-      s.config_epoch = settings_.config_epoch + 1;
+      s.config_epoch = settings_.config_epoch + 1;  // the firmware's own bump
       settings_ = s;
       settings_store_.save(s);  // persists on every SET_RADIO (docs/radio-protocol.md §6)
       set_count_since_boot_++;
@@ -441,7 +443,7 @@ void CommandProcessor::handle_request(const ClientToRadioMessage& req,
         return;
       }
       uint32_t seq =
-          store_.append(clock_.uptime_ms64(), 0, 0, kFlagsSent, raw, n, NULL);
+          store_.append(clock_.uptime_ms64(), 0, 0, kFlagSent, raw, n, NULL);
       if (seq == 0) {
         // The store could not take the packet at all (a pool that cannot
         // hold it). Refuse before accepting: a PacketAccepted for a seq that
@@ -544,9 +546,14 @@ void CommandProcessor::handle_request(const ClientToRadioMessage& req,
       }
       if (m.has_pin) {
         DeviceSettings::set_pin(next.pin, m.pin);
-        // The lock changed, so every session that knew the *old* PIN is no
-        // longer entitled to the new one — including the issuer's peers
-        // (docs/radio-protocol.md §8.1 "a PIN change re-gates immediately").
+        // The lock changed, so the lock rule now applies in both directions:
+        // every other connection loses the session it held (a peer that knew
+        // the old PIN must not survive a rotation), and the writer gains
+        // one. Without the second half, setting a PIN from the shipped
+        // default would lock the writer out of the device it just
+        // configured — it proved it knows the new PIN by writing it
+        // (docs/radio-protocol.md §8.1).
+        from->authenticated = true;
         for (size_t i = 0; i < num_sinks_; i++) {
           if (sinks_[i] != NULL && sinks_[i] != from) {
             sinks_[i]->authenticated = false;
@@ -646,15 +653,20 @@ uint32_t CommandProcessor::on_packet_received(int8_t rssi, int8_t snr,
   noise_floor_dbm_ = (int32_t)rssi - (int32_t)snr;  // the last estimate wins
   StoredPacket e;
   uint32_t seq =
-      store_.append(clock_.uptime_ms64(), rssi, snr, kFlagsReceived, raw, len,
+      store_.append(clock_.uptime_ms64(), rssi, snr, kFlagReceived, raw, len,
                     &e);
   // seq 0 means the store dropped the packet outright (larger than the whole
   // pool), and a live push for a seq the app could never fetch again would
   // be a lie.
   if (seq == 0) return 0;
-  // Live push while connected (docs/radio-protocol.md §10), id = 0.
+  // Live push while connected (docs/radio-protocol.md §10), id = 0. Like
+  // the DeviceSettings push, it is filtered: FetchPackets is auth-gated, so
+  // pushing the same raw bytes to an unauthenticated socket that merely
+  // attached would hand a stranger every packet the node hears and make the
+  // gate on fetch pointless. Connections on the shipped default PIN are
+  // authorized, so an unconfigured device is unaffected.
   build_packet_entry(0, e);
-  broadcast_response(NULL);
+  broadcast_response(NULL, /*authorized_only=*/true);
   return seq;
 }
 

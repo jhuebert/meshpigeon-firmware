@@ -73,8 +73,7 @@ envelope   := serialized ClientToRadio or RadioToClient
   `noise_floor_dbm` — the last packet's RSSI − SNR, 0 = unknown); live
   connection state lives in `Status` (Wi-Fi link plus the per-transport
   `ble_clients` / `usb_cdc_clients` / `wifi_tcp_clients`). Do not put either
-  kind in the other message.
-- The PIN is **write-only on the wire** — `DeviceSettings` has no PIN field
+  kind in the other message.- The PIN is **write-only on the wire** — `DeviceSettings` has no PIN field
   and must never grow one. Writing an empty `pin` restores the factory
   default; absent leaves it alone.
 - Device settings: name, Wi-Fi (enabled/ssid/password/port, default 5000).
@@ -84,7 +83,11 @@ envelope   := serialized ClientToRadio or RadioToClient
   ping, device info, status, auth and bootloader stay open.
 - Auth is per connection, the shipped default PIN is the public `"0000"`, three
   failures are free and then a 1 s penalty window applies (per *device*, not
-  per connection, so parallel sockets do not multiply the guess rate).
+  per connection, so parallel sockets do not multiply the guess rate). The
+  two async pushes that carry protected material — `DeviceSettings` (the
+  Wi-Fi passphrase) and the live `PacketEntry` — are filtered by the same
+  `is_authorized()` question, because a push that an unauthenticated socket
+  can read makes the gate on the request pointless.
 - Wi-Fi (ESP32 envs only): station + DHCP, multi-client TCP (≤ 4), mDNS
   `meshpigeon-XXXX.local`, retries 5 s → 2 min forever.
 
@@ -123,8 +126,9 @@ renumbering, width/meaning changes, or a framing change.
 protobufs/meshpigeon/        the wire spec: .proto + .options caps
 buf.yaml                     `buf lint` / `buf breaking` config
 lib/meshpigeon-core/         board-neutral core (built for boards AND host)
-  include/meshpigeon/        protocol.h, framing.h, settings.h, packet_store.h,
-                             uptime_clock.h, command_processor.h, proto_alias.h
+  include/meshpigeon/        protocol.h, framing.h, frame_drain.h, settings.h,
+                             packet_store.h, uptime_clock.h, command_processor.h,
+                             proto_alias.h
   src/                       the .cpp files + generated/ + nanopb/
   src/generated/             COMMITTED nanopb output (regen-protos.sh)
   src/nanopb/                vendored nanopb 0.4.9 runtime
@@ -296,12 +300,38 @@ These are not hypotheticals; each one cost a debugging session.
   both come from `BoardHooks::mac_suffix()`. Compute the effective name
   **once** — `CommandProcessor::effective_name()` — and hand it to the
   transport; never re-derive the suffix inside a transport. That is also why
-  `main.cpp` boots the core *before* creating any transport: the settings
-  have to be loaded before the first advertisement.
-- **The `CommandProcessor` sink registry** holds **6** clients total, shared
-  across every transport (`kMaxSinks`) — enough for USB + BLE + the four TCP
-  clients the doc promises on ESP32. `add_sink()` returns `false` when it is
-  full, so a transport turns the extra client away; never ignore the result.
+  `main.cpp` boots the core and *then* creates any transport: the settings
+  have to be loaded before the first advertisement, and BLE has to be up
+  before the name can be derived.
+- **The `CommandProcessor` sink registry** holds **8** clients total, shared
+  across every transport (`kMaxSinks`) — exactly USB CDC + the ESP32 BLE
+  sink's three centrals + the four TCP clients the doc promises, so the two
+  limits cannot disagree. `add_sink()` returns `false` when it is full, so a
+  transport turns the extra client away; never ignore the result. The ESP32
+  BLE sink holds a **fixed array** of connections, not a vector: the registry
+  stores pointers into it, so a reallocation would leave every registered
+  connection dangling.
+- **Auth state lives on the connection, so a transport with more than one
+  connection needs more than one sink.** The ESP32 BLE sink used to be one
+  sink for all centrals, on the reasoning that a NUS link is "one serial
+  console" — which is false the moment a second central attaches, and made
+  it possible for a second central to inherit the session the first one had
+  authenticated. Each central is now its own `IFrameSink`. Outbound frames
+  still fan out to all of them, so a push is one serialization either way.
+- **The derived name needs the BLE stack, so BLE comes first.**
+  `effective_name()` derives `MeshPigeon-XXXX` from the BLE address, and on
+  both families that address does not exist until the stack is up
+  (`NimBLEDevice::init()` / `Bluefruit.begin()`). Asking first advertised
+  `MeshPigeon-0000` — and, on nRF52, `MeshPigeon-` with no suffix at all,
+  because `sd_ble_gap_addr_get()` simply fails. Hence `BleSink::begin()`
+  takes no name and does not start advertising; `set_name()` is the one place
+  a name is ever set, for the first advertisement and every rename alike.
+- **Never re-tune the radio while it is transmitting.** The tuning sequence
+  calls `standby()`, which aborts the TX on the silicon: the transmission
+  never completes, `tx_done()` never sees `kIrqTxDone` again, and the node
+  answers `BUSY` to every `SendPacket` until it is power-cycled. The core
+  rejects the retune with `ERROR_CODE_BUSY` and `LoraRadioBase::apply()`
+  refuses as a backstop.
 - **`FetchPackets` is capped per request** (64 entries). The stream is written
   straight out of the sink inside one handler call, so an unbounded
   `max_count` would let a client hold the loop (and the BLE queue) for as long
@@ -312,7 +342,20 @@ These are not hypotheticals; each one cost a debugging session.
   auth-exempt and an unbounded `while (available())` would let one client keep
   the radio from ever being polled. The budget is in **bytes, not frames** —
   garbage never completes a frame, so a frame counter would never advance.
-  Every transport that drains a socket/FIFO in `pump()` uses it.
+  Every transport that drains a socket/FIFO in `pump()` calls
+  `drain_frames()` (`frame_drain.h`) rather than writing the loop out again:
+  the budget is a safety property, and it is exactly the kind of rule that
+  gets forgotten in the fourth hand-written copy.
+- **Client slots are not packed.** A client that disconnects leaves a hole,
+  so every walk over a fixed client array must go by slot index, never by
+  "the i-th live client" — `stop_server()` looping
+  `while (num_clients_ > 0) drop_client(num_clients_ - 1)` hung the board
+  forever the moment a hole sat at that index.
+- **`MESHPIGEON_MAX_FRAME_PAYLOAD` is asserted against nanopb's own size
+  estimate** in `proto_alias.h` (`meshpigeon_RadioToClient_size` /
+  `meshpigeon_ClientToRadio_size`). Grow a field, a cap or a oneof tag past
+  the cap and the *build* fails, instead of the answer silently vanishing on
+  the device because `encode_response()` returned 0.
 - **The CRC is on the wire, so any client that isn't a transport has to strip
   it.** What arrives is `COBS(envelope ‖ crc16) 0x00`: read to the `0x00`
   delimiter, COBS-decode, **drop the trailing 2 bytes**, *then* protobuf-decode.
