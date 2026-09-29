@@ -109,9 +109,9 @@ human-readable hint, explicitly not a contract.
 |---|---|
 | `ERROR_CODE_BAD_COMMAND` | unknown operation (radio predates the oneof variant, or a bug) |
 | `ERROR_CODE_BAD_PAYLOAD` | wrong size/format/validation — rejected atomically, nothing applied |
-| `ERROR_CODE_BUSY` | TX in flight, or the first-owner lock is active (§6) |
+| `ERROR_CODE_BUSY` | TX in flight, the first-owner lock is active (§6), or the packet store could not take the packet (§10) |
 | `ERROR_CODE_TX_FAILED` | the radio refused the tuning or the transmission |
-| `ERROR_CODE_NO_RADIO` | the radio failed to come up or refused a tuning, so there is no air to use |
+| `ERROR_CODE_NO_RADIO` | the radio failed to come up, or would not accept the persisted tuning at boot — there is no air to use |
 | `ERROR_CODE_NOT_SUPPORTED` | feature absent on this board (capability-gated, §8) |
 | `ERROR_CODE_AUTH_REQUIRED` | a PIN is set and this connection has not authenticated (§8) |
 
@@ -126,7 +126,7 @@ human-readable hint, explicitly not a contract.
 | `store` | `count`, `capacity_bytes`, `dropped`, `oldest_seq` |
 | `radio_config_epoch` | bumped on every accepted `SetRadioSettings` |
 | `battery_mv` | 0xFFFF = unknown (device status, not mesh telemetry) |
-| `radio_ok` | false when the radio failed to come up or to accept the persisted tuning; `SendPacket` then answers `ERROR_CODE_NO_RADIO` |
+| `radio_ok` | false when the radio failed to come up at boot or would not accept the persisted tuning; `SendPacket` then answers `ERROR_CODE_NO_RADIO`. A re-tune the radio *refuses* does **not** clear it — the previous tuning stays in force |
 | `auth_required` | true when a PIN is set and *this* connection is not authenticated |
 | `noise_floor_dbm` | estimated receiver noise floor in dBm; **0 = unknown** (nothing received since boot) |
 
@@ -171,7 +171,8 @@ tunes what it is told.
   whole 10 Hz step, SF or CR out of range) are rejected with
   `ERROR_CODE_BAD_PAYLOAD`; a radio that refuses the applied settings answers
   `ERROR_CODE_TX_FAILED` and keeps the previous tuning, persisted and in
-  force. `bandwidth_hz` is checked *before* it is converted to the internal
+  force — so the device stays fully usable, and only that request fails.
+  `bandwidth_hz` is checked *before* it is converted to the internal
   0.01 kHz unit, so an out-of-range value can never wrap into a valid-looking
   one.
 - **Persistence is best-effort.** A flash write that fails is not reported

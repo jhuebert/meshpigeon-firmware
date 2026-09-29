@@ -148,7 +148,8 @@ message Error {
     // Wrong size/format/validation; the request was rejected atomically —
     // nothing was applied.
     ERROR_CODE_BAD_PAYLOAD = 2;
-    // TX in flight, first-owner lock active, or another busy condition.
+    // TX in flight, the first-owner lock is active, or the packet store
+    // could not take the packet.
     ERROR_CODE_BUSY = 3;
     // The radio refused or failed the transmission.
     ERROR_CODE_TX_FAILED = 4;
@@ -162,7 +163,9 @@ message Error {
 
   ErrorCode code = 1;
 
-  // Short human-readable hint for logs/UI. Not stable for parsing.
+  // Short human-readable hint for logs/UI. Not stable for parsing. The
+  // firmware leaves it empty today (the code is the contract); a client must
+  // never parse it.
   string message = 2;
 }
 

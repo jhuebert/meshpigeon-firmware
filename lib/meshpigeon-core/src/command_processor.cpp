@@ -348,6 +348,14 @@ void CommandProcessor::handle_request(const ClientToRadioMessage& req,
 
     case kOpSetRadioSettings: {
       if (!require_auth(req.id, from)) return;
+      // nanopb decodes an absent submessage as an empty one, so has_settings
+      // is the only thing that distinguishes "no settings at all" from "all
+      // defaults" (AGENTS.md §6).
+      if (!req.body.set_radio_settings.has_settings) {
+        send_error(req.id, meshpigeon_Error_ErrorCode_ERROR_CODE_BAD_PAYLOAD,
+                   from);
+        return;
+      }
       const RadioSettingsMessage& m = req.body.set_radio_settings.settings;
       RadioSettings s;
       s.version = RadioSettings::kSerializedVersion;
@@ -372,14 +380,16 @@ void CommandProcessor::handle_request(const ClientToRadioMessage& req,
         send_error(req.id, meshpigeon_Error_ErrorCode_ERROR_CODE_BUSY, from);
         return;
       }
-      radio_ok_ = radio_.apply(s);
-      if (!radio_ok_) {
-        // The radio refused the tuning: the previous settings stay in force
-        // and stay persisted, so the next boot comes up on a known-good one.
+      // A rejected tuning leaves the previous one in force, and the previous
+      // one is what the device is still using — so it must not clear
+      // radio_ok_. Only boot() does that, when the radio failed to come up or
+      // could not accept what was persisted (docs/radio-protocol.md §5).
+      if (!radio_.apply(s)) {
         send_error(req.id, meshpigeon_Error_ErrorCode_ERROR_CODE_TX_FAILED,
                    from);
         return;
       }
+      radio_ok_ = true;  // it just accepted a tuning: the air is usable
       s.config_epoch = settings_.config_epoch + 1;
       settings_ = s;
       settings_store_.save(s);  // persists on every SET_RADIO (docs/radio-protocol.md §6)

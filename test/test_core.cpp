@@ -841,6 +841,57 @@ void test_set_radio_apply_failure_is_tx_failed() {
   TEST_ASSERT_EQUAL(0, proc->settings().config_epoch);  // nothing applied
 }
 
+void test_rejected_retune_leaves_the_radio_usable() {
+  // A radio that refuses one tuning still holds the previous one, which is
+  // in force and persisted — so the rejection must not cost the device its
+  // air until the next reboot. Only a failure at boot() clears radio_ok.
+  ClientToRadioMessage req = request(1);
+  req.which_body = kOpSetRadioSettings;
+  req.body.set_radio_settings.has_settings = true;
+  RadioSettingsMessage& m = req.body.set_radio_settings.settings;
+  m.freq_hz = 906875000;
+  m.bandwidth_hz = 125000;
+  m.sf = 9;
+  m.cr = 5;
+  radio->apply_ok_ = false;
+  send(req, sink);
+  TEST_ASSERT_EQUAL(meshpigeon_Error_ErrorCode_ERROR_CODE_TX_FAILED,
+                    sink->at(0).error());
+  TEST_ASSERT_TRUE(proc->radio_ok());
+
+  sink->clear();
+  ClientToRadioMessage tx = request(2);
+  tx.which_body = kOpSendPacket;
+  tx.body.send_packet.raw.size = 1;
+  tx.body.send_packet.raw.bytes[0] = 0x45;
+  send(tx, sink);
+  TEST_ASSERT_EQUAL(meshpigeon_RadioToClient_packet_accepted_tag,
+                    sink->at(0).which());
+  TEST_ASSERT_EQUAL(1, radio->tx_calls_);
+
+  // The successful retune is what makes a radio that failed at boot usable.
+  radio->apply_ok_ = true;
+  sink->clear();
+  proc->boot();
+  radio->apply_ok_ = false;
+  sink->clear();
+  req.id = 3;
+  send(req, sink);
+  TEST_ASSERT_EQUAL(meshpigeon_Error_ErrorCode_ERROR_CODE_TX_FAILED,
+                    sink->at(0).error());
+  TEST_ASSERT_TRUE(proc->radio_ok());
+}
+
+void test_set_radio_without_settings_is_bad_payload() {
+  // nanopb decodes an absent submessage as an empty one: without an explicit
+  // has_settings check there is no way to tell it from "all defaults".
+  ClientToRadioMessage req = request(1);
+  req.which_body = kOpSetRadioSettings;
+  send(req, sink);
+  TEST_ASSERT_EQUAL(meshpigeon_Error_ErrorCode_ERROR_CODE_BAD_PAYLOAD,
+                    sink->at(0).error());
+}
+
 void test_first_owner_lock_honors_only_first_set() {
   ClientToRadioMessage req = request(1);
   req.which_body = kOpSetRadioSettings;
@@ -1215,8 +1266,8 @@ void test_boot_reports_a_dead_radio_and_still_loads_settings() {
 }
 
 void test_send_packet_survives_a_failed_apply() {
-  // radio_ok is the gate on SendPacket, so a rejected re-tune has to clear
-  // it: a later send must not report success for a radio that is not there.
+  // radio_ok is the gate on SendPacket, so a radio that could not come up at
+  // boot must refuse sends rather than pretend to key up.
   radio->apply_ok_ = false;
   proc->boot();
   TEST_ASSERT_FALSE(proc->radio_ok());
@@ -1832,6 +1883,8 @@ int main() {
   RUN_TEST(test_set_radio_persists_and_applies);
   RUN_TEST(test_set_radio_bad_payload);
   RUN_TEST(test_set_radio_apply_failure_is_tx_failed);
+  RUN_TEST(test_rejected_retune_leaves_the_radio_usable);
+  RUN_TEST(test_set_radio_without_settings_is_bad_payload);
   RUN_TEST(test_first_owner_lock_honors_only_first_set);
   RUN_TEST(test_radio_changed_broadcast_to_others);
   RUN_TEST(test_send_packet_refuses_a_store_that_cannot_take_it);
