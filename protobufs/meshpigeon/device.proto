@@ -77,6 +77,14 @@ message DeviceInfo {
   // box). Every operation except ping/get_device_info/auth/bootloader
   // returns ERROR_CODE_AUTH_REQUIRED until Auth succeeds.
   bool auth_required = 11;
+
+  // Estimated receiver noise floor in dBm, from the most recent packet the
+  // radio heard (RSSI - SNR); 0 = unknown, i.e. nothing received since
+  // boot. A reading, not a mesh statistic: the app pairs it with the
+  // per-packet RSSI/SNR it already sees to judge how quiet the band is.
+  // It changes only when a packet arrives, so poll it, do not expect
+  // updates.
+  int32 noise_floor_dbm = 12;
 }
 
 // Packet store statistics. The store is RAM-only by design (docs/radio-protocol.md §10):
@@ -213,6 +221,12 @@ message Status {
 
   // Connected BLE centrals.
   uint32 ble_clients = 6;
+
+  // USB CDC hosts with the port open (0 or 1): the serial console.
+  uint32 usb_cdc_clients = 7;
+
+  // TCP sockets the Wi-Fi server currently has open (ESP32 boards only).
+  uint32 wifi_tcp_clients = 8;
 }
 
 // ---------------------------------------------------------------------------

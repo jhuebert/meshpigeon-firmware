@@ -70,6 +70,11 @@ envelope   := serialized ClientToRadio or RadioToClient
   additive proto changes need no version bump.
 - Frame payload cap 512 B; a raw on-air packet is ≤ 255 B (SX12xx silicon
   cap). `PacketEntry.uptime_ms` and `DeviceInfo.uptime_ms` are 64-bit.
+- Slow-changing health readings live in `DeviceInfo` (battery, `radio_ok`,
+  `noise_floor_dbm` — the last packet's RSSI − SNR, 0 = unknown); live
+  connection state lives in `Status` (Wi-Fi link plus the per-transport
+  `ble_clients` / `usb_cdc_clients` / `wifi_tcp_clients`). Do not put either
+  kind in the other message.
 - The PIN is **write-only on the wire** — `DeviceSettings` has no PIN field
   (field 2 is reserved) and must never grow one.
 - Device settings: name, Wi-Fi (enabled/ssid/password/port, default 5000).
@@ -153,13 +158,17 @@ Envs: `xiao_wio`, `heltec_v3` (ESP32-S3, USB CDC + BLE + Wi-Fi TCP), `t114`,
 
 `buf lint` / `buf breaking` are configured (`buf.yaml`) but not wired into CI;
 installing buf in the runner is a small, welcome addition. `regen-protos.sh
---check` **is** the CI gate on the schema.
+--check` **is** the CI gate on the schema. The nanopb generator is **not**
+vendored: fetch the 0.4.9 `linux-x86` tarball somewhere and point `NANOPB_DIR`
+at it (CI does this into `$HOME/nanopb`).
 
 The simulator is the development loop for anything protocol-shaped: it speaks
 the identical core over TCP, so a full app pipeline can be exercised with zero
 hardware. `--fake-wifi` scripts a `OFF → CONNECTING → CONNECTED` status
 machine for app CI. `scripts/bench.sh` is the (still skeletal) hardware rig
-driver.
+driver. A *script* driving it must mirror the framing itself (§6, last trap);
+there is no scripted client in the repo, so if you add one for app CI, put it
+in `scripts/` rather than re-deriving the wire format each time.
 
 ### CI
 
@@ -226,3 +235,10 @@ These are not hypotheticals; each one cost a debugging session.
   address's two low bytes. Don't compute the suffix twice, differently.
 - The `CommandProcessor` sink registry holds **4** clients total, shared across
   every transport (`kMaxSinks`). BLE + TCP clients compete for it.
+- **The CRC is on the wire, so any client that isn't a transport has to strip
+  it.** What arrives is `COBS(envelope ‖ crc16) 0x00`: read to the `0x00`
+  delimiter, COBS-decode, **drop the trailing 2 bytes**, *then* protobuf-decode.
+  A `FrameReader` does all of this for you (`feed()` hands back the envelope
+  only) — the step only bites hand-rolled probes against the sim, where
+  parsing a frame that still carries its CRC fails with a nonsense wire type
+  several fields in.

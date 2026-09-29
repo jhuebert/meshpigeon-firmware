@@ -104,6 +104,13 @@ typedef struct _meshpigeon_DeviceInfo {
  box). Every operation except ping/get_device_info/auth/bootloader
  returns ERROR_CODE_AUTH_REQUIRED until Auth succeeds. */
     bool auth_required;
+    /* Estimated receiver noise floor in dBm, from the most recent packet the
+ radio heard (RSSI - SNR); 0 = unknown, i.e. nothing received since
+ boot. A reading, not a mesh statistic: the app pairs it with the
+ per-packet RSSI/SNR it already sees to judge how quiet the band is.
+ It changes only when a packet arrives, so poll it, do not expect
+ updates. */
+    int32_t noise_floor_dbm;
 } meshpigeon_DeviceInfo;
 
 /* Reads the device settings. Requires auth (the Wi-Fi password is in here).
@@ -179,6 +186,10 @@ typedef struct _meshpigeon_Status {
     int32_t wifi_rssi;
     /* Connected BLE centrals. */
     uint32_t ble_clients;
+    /* USB CDC hosts with the port open (0 or 1): the serial console. */
+    uint32_t usb_cdc_clients;
+    /* TCP sockets the Wi-Fi server currently has open (ESP32 boards only). */
+    uint32_t wifi_tcp_clients;
 } meshpigeon_Status;
 
 /* Authenticates this connection. Required (when a PIN is set) before any
@@ -236,25 +247,25 @@ extern "C" {
 
 /* Initializer values for message structs */
 #define meshpigeon_GetDeviceInfo_init_default    {0}
-#define meshpigeon_DeviceInfo_init_default       {0, "", "", 0, {_meshpigeon_Capability_MIN, _meshpigeon_Capability_MIN, _meshpigeon_Capability_MIN, _meshpigeon_Capability_MIN, _meshpigeon_Capability_MIN, _meshpigeon_Capability_MIN, _meshpigeon_Capability_MIN, _meshpigeon_Capability_MIN, _meshpigeon_Capability_MIN, _meshpigeon_Capability_MIN, _meshpigeon_Capability_MIN, _meshpigeon_Capability_MIN, _meshpigeon_Capability_MIN, _meshpigeon_Capability_MIN, _meshpigeon_Capability_MIN, _meshpigeon_Capability_MIN}, 0, 0, false, meshpigeon_StoreInfo_init_default, 0, 0, 0, 0}
+#define meshpigeon_DeviceInfo_init_default       {0, "", "", 0, {_meshpigeon_Capability_MIN, _meshpigeon_Capability_MIN, _meshpigeon_Capability_MIN, _meshpigeon_Capability_MIN, _meshpigeon_Capability_MIN, _meshpigeon_Capability_MIN, _meshpigeon_Capability_MIN, _meshpigeon_Capability_MIN, _meshpigeon_Capability_MIN, _meshpigeon_Capability_MIN, _meshpigeon_Capability_MIN, _meshpigeon_Capability_MIN, _meshpigeon_Capability_MIN, _meshpigeon_Capability_MIN, _meshpigeon_Capability_MIN, _meshpigeon_Capability_MIN}, 0, 0, false, meshpigeon_StoreInfo_init_default, 0, 0, 0, 0, 0}
 #define meshpigeon_StoreInfo_init_default        {0, 0, 0, 0}
 #define meshpigeon_GetDeviceSettings_init_default {0}
 #define meshpigeon_DeviceSettings_init_default   {"", 0, "", "", 0}
 #define meshpigeon_SetDeviceSettings_init_default {false, "", false, "", false, 0, false, "", false, "", false, 0}
 #define meshpigeon_GetStatus_init_default        {0}
-#define meshpigeon_Status_init_default           {_meshpigeon_Status_WifiState_MIN, "", {0, {0}}, 0, 0, 0}
+#define meshpigeon_Status_init_default           {_meshpigeon_Status_WifiState_MIN, "", {0, {0}}, 0, 0, 0, 0, 0}
 #define meshpigeon_Auth_init_default             {""}
 #define meshpigeon_Reboot_init_default           {0}
 #define meshpigeon_FactoryReset_init_default     {0}
 #define meshpigeon_Bootloader_init_default       {0}
 #define meshpigeon_GetDeviceInfo_init_zero       {0}
-#define meshpigeon_DeviceInfo_init_zero          {0, "", "", 0, {_meshpigeon_Capability_MIN, _meshpigeon_Capability_MIN, _meshpigeon_Capability_MIN, _meshpigeon_Capability_MIN, _meshpigeon_Capability_MIN, _meshpigeon_Capability_MIN, _meshpigeon_Capability_MIN, _meshpigeon_Capability_MIN, _meshpigeon_Capability_MIN, _meshpigeon_Capability_MIN, _meshpigeon_Capability_MIN, _meshpigeon_Capability_MIN, _meshpigeon_Capability_MIN, _meshpigeon_Capability_MIN, _meshpigeon_Capability_MIN, _meshpigeon_Capability_MIN}, 0, 0, false, meshpigeon_StoreInfo_init_zero, 0, 0, 0, 0}
+#define meshpigeon_DeviceInfo_init_zero          {0, "", "", 0, {_meshpigeon_Capability_MIN, _meshpigeon_Capability_MIN, _meshpigeon_Capability_MIN, _meshpigeon_Capability_MIN, _meshpigeon_Capability_MIN, _meshpigeon_Capability_MIN, _meshpigeon_Capability_MIN, _meshpigeon_Capability_MIN, _meshpigeon_Capability_MIN, _meshpigeon_Capability_MIN, _meshpigeon_Capability_MIN, _meshpigeon_Capability_MIN, _meshpigeon_Capability_MIN, _meshpigeon_Capability_MIN, _meshpigeon_Capability_MIN, _meshpigeon_Capability_MIN}, 0, 0, false, meshpigeon_StoreInfo_init_zero, 0, 0, 0, 0, 0}
 #define meshpigeon_StoreInfo_init_zero           {0, 0, 0, 0}
 #define meshpigeon_GetDeviceSettings_init_zero   {0}
 #define meshpigeon_DeviceSettings_init_zero      {"", 0, "", "", 0}
 #define meshpigeon_SetDeviceSettings_init_zero   {false, "", false, "", false, 0, false, "", false, "", false, 0}
 #define meshpigeon_GetStatus_init_zero           {0}
-#define meshpigeon_Status_init_zero              {_meshpigeon_Status_WifiState_MIN, "", {0, {0}}, 0, 0, 0}
+#define meshpigeon_Status_init_zero              {_meshpigeon_Status_WifiState_MIN, "", {0, {0}}, 0, 0, 0, 0, 0}
 #define meshpigeon_Auth_init_zero                {""}
 #define meshpigeon_Reboot_init_zero              {0}
 #define meshpigeon_FactoryReset_init_zero        {0}
@@ -276,6 +287,7 @@ extern "C" {
 #define meshpigeon_DeviceInfo_battery_mv_tag     9
 #define meshpigeon_DeviceInfo_radio_ok_tag       10
 #define meshpigeon_DeviceInfo_auth_required_tag  11
+#define meshpigeon_DeviceInfo_noise_floor_dbm_tag 12
 #define meshpigeon_DeviceSettings_name_tag       1
 #define meshpigeon_DeviceSettings_wifi_enabled_tag 3
 #define meshpigeon_DeviceSettings_wifi_ssid_tag  4
@@ -293,6 +305,8 @@ extern "C" {
 #define meshpigeon_Status_wifi_port_tag          4
 #define meshpigeon_Status_wifi_rssi_tag          5
 #define meshpigeon_Status_ble_clients_tag        6
+#define meshpigeon_Status_usb_cdc_clients_tag    7
+#define meshpigeon_Status_wifi_tcp_clients_tag   8
 #define meshpigeon_Auth_pin_tag                  1
 
 /* Struct field encoding specification for nanopb */
@@ -312,7 +326,8 @@ X(a, STATIC,   OPTIONAL, MESSAGE,  store,             7) \
 X(a, STATIC,   SINGULAR, UINT32,   radio_config_epoch,   8) \
 X(a, STATIC,   SINGULAR, UINT32,   battery_mv,        9) \
 X(a, STATIC,   SINGULAR, BOOL,     radio_ok,         10) \
-X(a, STATIC,   SINGULAR, BOOL,     auth_required,    11)
+X(a, STATIC,   SINGULAR, BOOL,     auth_required,    11) \
+X(a, STATIC,   SINGULAR, INT32,    noise_floor_dbm,  12)
 #define meshpigeon_DeviceInfo_CALLBACK NULL
 #define meshpigeon_DeviceInfo_DEFAULT NULL
 #define meshpigeon_DeviceInfo_store_MSGTYPE meshpigeon_StoreInfo
@@ -360,7 +375,9 @@ X(a, STATIC,   SINGULAR, STRING,   wifi_ssid,         2) \
 X(a, STATIC,   SINGULAR, BYTES,    wifi_ipv4,         3) \
 X(a, STATIC,   SINGULAR, UINT32,   wifi_port,         4) \
 X(a, STATIC,   SINGULAR, INT32,    wifi_rssi,         5) \
-X(a, STATIC,   SINGULAR, UINT32,   ble_clients,       6)
+X(a, STATIC,   SINGULAR, UINT32,   ble_clients,       6) \
+X(a, STATIC,   SINGULAR, UINT32,   usb_cdc_clients,   7) \
+X(a, STATIC,   SINGULAR, UINT32,   wifi_tcp_clients,   8)
 #define meshpigeon_Status_CALLBACK NULL
 #define meshpigeon_Status_DEFAULT NULL
 
@@ -412,10 +429,10 @@ extern const pb_msgdesc_t meshpigeon_Bootloader_msg;
 #define meshpigeon_Bootloader_fields &meshpigeon_Bootloader_msg
 
 /* Maximum encoded size of messages (where known) */
-#define MESHPIGEON_MESHPIGEON_DEVICE_PB_H_MAX_SIZE meshpigeon_SetDeviceSettings_size
+#define MESHPIGEON_MESHPIGEON_DEVICE_PB_H_MAX_SIZE meshpigeon_DeviceInfo_size
 #define meshpigeon_Auth_size                     9
 #define meshpigeon_Bootloader_size               0
-#define meshpigeon_DeviceInfo_size               131
+#define meshpigeon_DeviceInfo_size               142
 #define meshpigeon_DeviceSettings_size           126
 #define meshpigeon_FactoryReset_size             0
 #define meshpigeon_GetDeviceInfo_size            0
@@ -423,7 +440,7 @@ extern const pb_msgdesc_t meshpigeon_Bootloader_msg;
 #define meshpigeon_GetStatus_size                0
 #define meshpigeon_Reboot_size                   0
 #define meshpigeon_SetDeviceSettings_size        135
-#define meshpigeon_Status_size                   64
+#define meshpigeon_Status_size                   76
 #define meshpigeon_StoreInfo_size                24
 
 #ifdef __cplusplus

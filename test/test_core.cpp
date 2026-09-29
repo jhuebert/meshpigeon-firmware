@@ -95,6 +95,8 @@ class FakeHooks : public IBoardHooks {
     name_[sizeof(name_) - 1] = 0;
   }
   uint8_t ble_clients() override { return ble_clients_; }
+  uint8_t usb_cdc_clients() override { return usb_cdc_clients_; }
+  uint8_t wifi_tcp_clients() override { return wifi_tcp_clients_; }
   void fill_status(StatusMessage* status) override {
     status->wifi_state = status_wifi_state_;
     strncpy(status->wifi_ssid, "testnet", sizeof(status->wifi_ssid) - 1);
@@ -122,6 +124,8 @@ class FakeHooks : public IBoardHooks {
       meshpigeon_Status_WifiState_WIFI_STATE_CONNECTED;
   uint16_t battery_mv_ = 3900;
   uint8_t ble_clients_ = 3;
+  uint8_t usb_cdc_clients_ = 1;
+  uint8_t wifi_tcp_clients_ = 2;
   bool wifi_supported_ = true;
   DeviceSettings wifi_{};
   char name_[MESHPIGEON_NAME_MAX + 1] = {0};
@@ -939,6 +943,8 @@ void test_device_info() {
   TEST_ASSERT_TRUE(m.radio_ok);
   TEST_ASSERT_FALSE(m.auth_required);  // default PIN: no lock
   TEST_ASSERT_EQUAL(0, m.radio_config_epoch);
+  // Nothing received yet => no noise-floor estimate.
+  TEST_ASSERT_EQUAL(0, m.noise_floor_dbm);
   // store stats track reality
   const uint8_t pkt[] = {0x45};
   proc->on_packet_received(-80, 10, pkt, 1);
@@ -946,6 +952,8 @@ void test_device_info() {
   send(req, sink);
   TEST_ASSERT_EQUAL(1, sink->at(0).m().body.device_info.store.count);
   TEST_ASSERT_EQUAL(1, sink->at(0).m().body.device_info.store.oldest_seq);
+  // RSSI - SNR of the last packet is the noise floor estimate.
+  TEST_ASSERT_EQUAL(-90, sink->at(0).m().body.device_info.noise_floor_dbm);
 }
 
 void test_device_info_radio_failure() {
@@ -1316,6 +1324,8 @@ void test_status_reads_the_hooks() {
   TEST_ASSERT_EQUAL(5000, m.wifi_port);
   TEST_ASSERT_EQUAL(-61, m.wifi_rssi);
   TEST_ASSERT_EQUAL(3, m.ble_clients);
+  TEST_ASSERT_EQUAL(1, m.usb_cdc_clients);
+  TEST_ASSERT_EQUAL(2, m.wifi_tcp_clients);
 }
 
 void test_status_pushed_on_wifi_transition() {

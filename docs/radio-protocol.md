@@ -127,6 +127,17 @@ human-readable hint, explicitly not a contract.
 | `battery_mv` | 0xFFFF = unknown (device status, not mesh telemetry) |
 | `radio_ok` | false when the radio failed to init or apply |
 | `auth_required` | true when a PIN is set and *this* connection is not authenticated |
+| `noise_floor_dbm` | estimated receiver noise floor in dBm; **0 = unknown** (nothing received since boot) |
+
+`noise_floor_dbm` is the **RSSI − SNR of the most recent received packet** —
+the noise the receiver saw around the last signal it decoded. It is a reading,
+not a mesh statistic, and it only changes when a packet arrives (there is no
+periodic hardware noise probe in the port, so silence reports the last
+estimate, or 0 before the first packet). Clients pair it with the per-packet
+`rssi`/`snr` they already receive.
+
+Client counts are **not** here: they change on every connect, so they live in
+`Status` (§9), which is the snapshot clients poll.
 
 ### 5.1 Time
 
@@ -254,7 +265,10 @@ see the new name at the next advertising round.
 ## 9. Status
 
 `GetStatus` is the snapshot; the async `Status` push fires **only on Wi-Fi
-state transitions** (no RSSI churn).
+state transitions** (no RSSI churn). The three `*_clients` counts are the
+per-transport view of who is attached right now — the transport a client is
+connected through, so a multi-transport pigeon is never ambiguous about
+which link it is using.
 
 | Field | Meaning |
 |---|---|
@@ -264,6 +278,8 @@ state transitions** (no RSSI churn).
 | `wifi_port` | the port the TCP server listens on |
 | `wifi_rssi` | dBm; **0 = unknown** (not connected) |
 | `ble_clients` | connected BLE centrals |
+| `usb_cdc_clients` | USB CDC hosts with the serial port open (0 or 1) |
+| `wifi_tcp_clients` | TCP sockets the Wi-Fi server has open (0 on non-Wi-Fi boards) |
 
 ## 10. Packet store
 

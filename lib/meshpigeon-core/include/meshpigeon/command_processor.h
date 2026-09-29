@@ -59,6 +59,10 @@ class IBoardHooks {
   virtual void set_device_name(const char* name) { (void)name; }
   /** Connected BLE centrals, for Status.ble_clients. */
   virtual uint8_t ble_clients() { return 0; }
+  /** USB CDC hosts with the port open (0 or 1), for Status.usb_cdc_clients. */
+  virtual uint8_t usb_cdc_clients() { return 0; }
+  /** TCP sockets on the Wi-Fi server, for Status.wifi_tcp_clients. */
+  virtual uint8_t wifi_tcp_clients() { return 0; }
   /** Fill a Status from the board's live link state (Wi-Fi etc.). */
   virtual void fill_status(StatusMessage* status) { (void)status; }
   /** Device settings changed: the link reacts (connect/disconnect/rebind).
@@ -132,6 +136,8 @@ class CommandProcessor {
 
   const RadioSettings& settings() const { return settings_; }
   const DeviceSettings& device_settings() const { return device_; }
+  /** Last estimated noise floor in dBm; 0 when nothing has been received. */
+  int32_t noise_floor_dbm() const { return noise_floor_dbm_; }
   uint32_t tx_in_flight() const { return tx_pending_; }
   size_t sink_count() const { return num_sinks_; }
 
@@ -179,6 +185,10 @@ class CommandProcessor {
   uint32_t set_count_since_boot_ = 0;
   DeviceSettings device_;
   bool radio_ok_ = true;
+  // RSSI - SNR of the last received packet: the receiver's noise floor as
+  // far as the radio can tell us without a dedicated register read. 0 =
+  // no measurement yet (DeviceInfo.noise_floor_dbm).
+  int32_t noise_floor_dbm_ = 0;
 
   // AUTH rate limit: 3 failures are free, then a 1 s penalty window per
   // further attempt, during which attempts are rejected unevaluated (§8).

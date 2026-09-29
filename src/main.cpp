@@ -140,6 +140,20 @@ class BoardHooks : public IBoardHooks {
     return g_ble ? g_ble->ble_clients() : 0;
   }
 
+  uint8_t usb_cdc_clients() override {
+    // The console is a single client: a host with the port open (DTR
+    // asserted on ESP32, CDC mounted on nRF52). Nothing listening = 0.
+    return Serial ? 1 : 0;
+  }
+
+  uint8_t wifi_tcp_clients() override {
+#if defined(MESHPIGEON_HAS_WIFI)
+    return g_wifi ? (uint8_t)g_wifi->client_count() : 0;
+#else
+    return 0;
+#endif
+  }
+
   void fill_status(StatusMessage* status) override {
 #if defined(MESHPIGEON_HAS_WIFI)
     if (g_wifi) {

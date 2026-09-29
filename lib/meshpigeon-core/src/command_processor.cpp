@@ -150,6 +150,8 @@ void CommandProcessor::build_status() {
   StatusMessage& m = response_.body.status;
   if (hooks_) hooks_->fill_status(&m);
   m.ble_clients = hooks_ ? hooks_->ble_clients() : 0;
+  m.usb_cdc_clients = hooks_ ? hooks_->usb_cdc_clients() : 0;
+  m.wifi_tcp_clients = hooks_ ? hooks_->wifi_tcp_clients() : 0;
 }
 
 void CommandProcessor::send_error(uint32_t id, ErrorCode code,
@@ -206,6 +208,7 @@ void CommandProcessor::send_device_info(uint32_t id, IFrameSink* to) {
   m.radio_config_epoch = settings_.config_epoch;
   m.battery_mv = hooks_ ? hooks_->battery_mv() : 0xFFFF;
   m.radio_ok = radio_ok_;
+  m.noise_floor_dbm = noise_floor_dbm_;
   // §8: an unauthenticated client sees the lock before it hits it.
   m.auth_required = to != NULL && !to->authenticated && !device_.pin_is_default();
   deliver(to);
@@ -561,6 +564,7 @@ void CommandProcessor::handle_request(const ClientToRadioMessage& req,
 uint32_t CommandProcessor::on_packet_received(int8_t rssi, int8_t snr,
                                               const uint8_t* raw, uint8_t len) {
   if (len > MESHPIGEON_MAX_RAW_PACKET) len = MESHPIGEON_MAX_RAW_PACKET;
+  noise_floor_dbm_ = (int32_t)rssi - (int32_t)snr;  // the last estimate wins
   uint32_t seq =
       store_.append(clock_.uptime_ms64(), rssi, snr, kFlagsReceived, raw, len);
   // Live push while connected (docs/radio-protocol.md §10), id = 0.

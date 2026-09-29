@@ -46,6 +46,8 @@ static bool g_fake_wifi = false;
 static meshpigeon_Status_WifiState g_fake_state =
     meshpigeon_Status_WifiState_WIFI_STATE_OFF;
 static uint32_t g_fake_changed_ms = 0;
+// Live TCP sockets, for Status.wifi_tcp_clients.
+static size_t g_tcp_clients = 0;
 
 static CommandProcessor& processor() { return *g_processor; }
 
@@ -86,6 +88,8 @@ class SimHooks : public IBoardHooks {
     }
   }
   bool wifi_supported() const override { return g_fake_wifi; }
+
+  uint8_t wifi_tcp_clients() override { return (uint8_t)g_tcp_clients; }
 
   const char* name() const { return name_; }
 
@@ -218,6 +222,7 @@ int main(int argc, char** argv) {
           Client* c = new Client(fd);
           clients.push_back(c);
           g_processor->add_sink(c);
+          g_tcp_clients = clients.size();
         }
       }
       for (size_t i = 0; i < clients.size();) {
@@ -226,6 +231,7 @@ int main(int argc, char** argv) {
           close(clients[i]->fd());
           delete clients[i];
           clients.erase(clients.begin() + i);
+          g_tcp_clients = clients.size();
         } else {
           i++;
         }
