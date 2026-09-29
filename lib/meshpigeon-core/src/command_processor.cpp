@@ -416,7 +416,14 @@ void CommandProcessor::handle_request(const ClientToRadioMessage& req,
         return;
       }
       uint32_t seq =
-          store_.append(clock_.uptime_ms64(), 0, 0, kFlagsSent, raw, n);
+          store_.append(clock_.uptime_ms64(), 0, 0, kFlagsSent, raw, n, NULL);
+      if (seq == 0) {
+        // The store could not take the packet at all (a pool that cannot
+        // hold it). Refuse before accepting: a PacketAccepted for a seq that
+        // can never be fetched — and a TxResult for it — would both lie.
+        send_error(req.id, meshpigeon_Error_ErrorCode_ERROR_CODE_BUSY, from);
+        return;
+      }
       // The response comes first (it is what the app is waiting on), then
       // the outcome — even when the radio refused the send outright.
       response_ = RadioToClientMessage_init_zero;
@@ -614,14 +621,17 @@ uint32_t CommandProcessor::on_packet_received(int8_t rssi, int8_t snr,
                                               const uint8_t* raw, uint8_t len) {
   // One reading of the clock: the stored stamp and the wire stamp must not
   // disagree across a rollover (docs/radio-protocol.md §5.1).
+  // The noise-floor estimate is taken from whatever arrived, stored or not:
+  // it is a reading of the receiver, not of the store.
   noise_floor_dbm_ = (int32_t)rssi - (int32_t)snr;  // the last estimate wins
-  uint32_t seq =
-      store_.append(clock_.uptime_ms64(), rssi, snr, kFlagsReceived, raw, len);
-  // Read the entry back rather than rebuilding it: seq 0 means the store
-  // dropped the packet outright (larger than the whole pool), and a live
-  // push for a seq the app could never fetch again would be a lie.
   StoredPacket e;
-  if (!store_.get(seq, &e)) return 0;
+  uint32_t seq =
+      store_.append(clock_.uptime_ms64(), rssi, snr, kFlagsReceived, raw, len,
+                    &e);
+  // seq 0 means the store dropped the packet outright (larger than the whole
+  // pool), and a live push for a seq the app could never fetch again would
+  // be a lie.
+  if (seq == 0) return 0;
   // Live push while connected (docs/radio-protocol.md §10), id = 0.
   build_packet_entry(0, e);
   broadcast_response(NULL);

@@ -893,6 +893,53 @@ void test_radio_changed_broadcast_to_others() {
 
 // ---- tests: packet store over the wire ------------------------------------------
 
+void test_store_append_reports_the_stored_entry() {
+  // append() hands back exactly what landed in the ring, so the receive hot
+  // path never has to walk the retained range to reach the newest entry.
+  PacketStore s(rec_b(1) * 8);
+  uint8_t data[3] = {0xDE, 0xAD, 0x01};
+  StoredPacket e;
+  for (int i = 0; i < 6; i++) {
+    uint32_t sq = s.append(0x1122334455667788ULL + (uint64_t)i, -91, 7, 0x02,
+                           data, sizeof(data), &e);
+    TEST_ASSERT_EQUAL((uint32_t)(i + 1), sq);
+    TEST_ASSERT_EQUAL(sq, e.seq);
+    TEST_ASSERT_EQUAL(0x1122334455667788ULL + (uint64_t)i, e.uptime_ms);
+    TEST_ASSERT_EQUAL(-91, e.rssi);
+    TEST_ASSERT_EQUAL(7, e.snr);
+    TEST_ASSERT_EQUAL(0x02, e.flags);
+    TEST_ASSERT_EQUAL(sizeof(data), e.len);
+    TEST_ASSERT_EQUAL_MEMORY(data, e.raw, sizeof(data));
+  }
+  // A drop consumes no seq and writes no entry.
+  PacketStore tiny(8);  // cannot hold even one record
+  TEST_ASSERT_EQUAL(0, tiny.append(0, -70, 9, 0x02, data, 3, &e));
+}
+
+void test_send_packet_refuses_a_store_that_cannot_take_it() {
+  // A store with no room for the packet at all: seq 0 is the "nothing was
+  // stored" sentinel, so accepting it would hand the app a seq it can never
+  // fetch and then push a TxResult for it.
+  delete store;
+  store = new PacketStore(8);
+  delete proc;
+  proc = new CommandProcessor(*store, *clock_, *sstore, *radio, "TEST", "0.1");
+  proc->set_hooks(hooks);
+  proc->add_sink(sink);
+  proc->boot();
+
+  ClientToRadioMessage req = request(1);
+  req.which_body = kOpSendPacket;
+  req.body.send_packet.raw.size = 8;
+  memset(req.body.send_packet.raw.bytes, 0x45, 8);
+  send(req, sink);
+
+  TEST_ASSERT_EQUAL(1, sink->count());
+  TEST_ASSERT_EQUAL(meshpigeon_Error_ErrorCode_ERROR_CODE_BUSY,
+                    sink->at(0).error());
+  TEST_ASSERT_EQUAL(0, radio->tx_calls_);  // nothing keyed up
+}
+
 void test_send_packet_roundtrip() {
   radio->tx_async_ = true;  // TX in flight until poll()
   const uint8_t pkt[] = {0x45, 0x01, 0x02, 0x03, 0x04};
@@ -1766,6 +1813,7 @@ int main() {
   RUN_TEST(test_store_wraps_tail_to_front);
   RUN_TEST(test_store_oversize_packet_never_fits);
   RUN_TEST(test_store_max_size_packet_roundtrip);
+  RUN_TEST(test_store_append_reports_the_stored_entry);
   RUN_TEST(test_store_randomized_matches_model);
   RUN_TEST(test_store_since_cursor_is_resumable);
   RUN_TEST(test_store_get_across_wrap);
@@ -1786,6 +1834,7 @@ int main() {
   RUN_TEST(test_set_radio_apply_failure_is_tx_failed);
   RUN_TEST(test_first_owner_lock_honors_only_first_set);
   RUN_TEST(test_radio_changed_broadcast_to_others);
+  RUN_TEST(test_send_packet_refuses_a_store_that_cannot_take_it);
   RUN_TEST(test_send_packet_roundtrip);
   RUN_TEST(test_send_packet_tx_failure_reports_result);
   RUN_TEST(test_send_packet_busy_when_second_in_flight);

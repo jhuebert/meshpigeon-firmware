@@ -59,10 +59,19 @@ class PacketStore {
   PacketStore(const PacketStore&) = delete;
   PacketStore& operator=(const PacketStore&) = delete;
 
-  /** Append a packet; drops the oldest on overflow. Returns assigned seq
-   *  (0 if the packet was dropped without ever entering the store). */
+  /**
+   * Append a packet; drops the oldest on overflow. Returns the assigned seq,
+   * or 0 if the packet was dropped without ever entering the store — seq 0
+   * is never a valid id, so it is a safe "nothing was stored" sentinel.
+   *
+   * `stored_out` (optional; NULL by default) receives the entry exactly as
+   * it landed in the ring. Callers that just appended should use it rather
+   * than get(), which walks the whole retained range to reach the newest
+   * entry.
+   */
   uint32_t append(uint64_t uptime_ms, int8_t rssi, int8_t snr, uint8_t flags,
-                  const uint8_t* raw, uint8_t len);
+                  const uint8_t* raw, uint8_t len,
+                  StoredPacket* stored_out = NULL);
 
   /** Copy the entry with the given seq into `out`. False if absent. */
   bool get(uint32_t seq, StoredPacket* out) const;
@@ -105,13 +114,7 @@ class PacketStore {
       if (next >= wrap_) next = 0;
       if (h.seq > since_seq) {
         StoredPacket e;
-        e.seq = h.seq;
-        e.uptime_ms = h.uptime_ms;
-        e.rssi = h.rssi;
-        e.snr = h.snr;
-        e.flags = h.flags;
-        e.len = h.len;
-        memcpy(e.raw, buf_ + off + kStoredPacketOverhead, h.len);
+        read_entry(off, h, &e);
         if (!cb(e)) break;
         delivered++;
       }
@@ -137,6 +140,9 @@ class PacketStore {
   uint32_t free_bytes() const;
   void read_header(uint32_t off, Header* h) const;
   void write_header(uint32_t off, const Header& h);
+  /** Unpack the on-ring record at `off` into a StoredPacket. The one place
+   *  the on-ring header is mapped onto the read model. */
+  void read_entry(uint32_t off, const Header& h, StoredPacket* out) const;
   void pop_oldest();
   uint32_t count_since_impl(uint32_t since_seq) const;
 

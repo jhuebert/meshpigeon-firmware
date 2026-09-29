@@ -41,6 +41,17 @@ void PacketStore::write_header(uint32_t off, const Header& h) {
   memcpy(buf_ + off, &h, kRecordOverhead);
 }
 
+void PacketStore::read_entry(uint32_t off, const Header& h,
+                             StoredPacket* out) const {
+  out->seq = h.seq;
+  out->uptime_ms = h.uptime_ms;
+  out->rssi = h.rssi;
+  out->snr = h.snr;
+  out->flags = h.flags;
+  out->len = h.len;
+  memcpy(out->raw, buf_ + off + kRecordOverhead, h.len);
+}
+
 void PacketStore::pop_oldest() {
   Header h;
   read_header(head_off_, &h);
@@ -57,7 +68,8 @@ void PacketStore::pop_oldest() {
 }
 
 uint32_t PacketStore::append(uint64_t uptime_ms, int8_t rssi, int8_t snr,
-                             uint8_t flags, const uint8_t* raw, uint8_t len) {
+                             uint8_t flags, const uint8_t* raw, uint8_t len,
+                             StoredPacket* stored_out) {
   uint32_t need = (uint32_t)(kRecordOverhead + len);
   if (capacity_ == 0 || need > capacity_) {
     dropped_++;  // can never fit this pool — no seq consumed
@@ -86,10 +98,12 @@ uint32_t PacketStore::append(uint64_t uptime_ms, int8_t rssi, int8_t snr,
     }
   }
 
+  const uint32_t at = tail_off_;
   Header h = {uptime_ms, next_seq_, rssi, snr, flags, len};
-  write_header(tail_off_, h);
-  memcpy(buf_ + tail_off_ + kRecordOverhead, raw, len);
-  tail_off_ += need;
+  write_header(at, h);
+  memcpy(buf_ + at + kRecordOverhead, raw, len);
+  if (stored_out != NULL) read_entry(at, h, stored_out);
+  tail_off_ = at + need;
   if (tail_off_ >= wrap_) tail_off_ = 0;
   count_++;
   return next_seq_++;
@@ -107,13 +121,7 @@ bool PacketStore::get(uint32_t seq, StoredPacket* out) const {
   Header h;
   read_header(off, &h);
   if (h.seq != seq) return false;  // defensive: ring corruption
-  out->seq = h.seq;
-  out->uptime_ms = h.uptime_ms;
-  out->rssi = h.rssi;
-  out->snr = h.snr;
-  out->flags = h.flags;
-  out->len = h.len;
-  memcpy(out->raw, buf_ + off + kRecordOverhead, h.len);
+  read_entry(off, h, out);
   return true;
 }
 
