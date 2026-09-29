@@ -1,6 +1,8 @@
 #include <string.h>
 #include <vector>
 
+#include <pb_decode.h>
+#include <pb_encode.h>
 #include <unity.h>
 
 #include "meshpigeon/command_processor.h"
@@ -61,14 +63,14 @@ class FakeRadio : public ILoRaRadio {
   RadioSettings applied_{};
   int apply_calls_ = 0;
   int tx_calls_ = 0;
-  uint8_t last_tx_[256] = {0};
+  uint8_t last_tx_[MESHPIGEON_MAX_RAW_PACKET] = {0};
   uint8_t last_tx_len_ = 0;
   bool apply_ok_ = true;
   bool tx_ok_ = true;
   bool tx_async_ = false;      // model an in-flight TX when true
   uint32_t complete_after_calls_ = 0;
   bool tx_active_ = false;
-  uint8_t rx_queue_[16][200];
+  uint8_t rx_queue_[16][MESHPIGEON_MAX_RAW_PACKET];
   uint8_t rx_len_[16];
   int8_t rx_rssi_[16];
   int8_t rx_snr_[16];
@@ -76,25 +78,92 @@ class FakeRadio : public ILoRaRadio {
   int rx_queue_len_ = 0;
 };
 
+/** Board facilities as the core sees them, with call counters. */
+class FakeHooks : public IBoardHooks {
+ public:
+  uint16_t battery_mv() override { return battery_mv_; }
+  void reboot_to_bootloader() override { bootloader_calls_++; }
+  void reboot() override { reboot_calls_++; }
+  void factory_reset() override { factory_reset_calls_++; }
+  void mac_suffix(char out[5]) override {
+    memcpy(out, "A3F2", 4);
+    out[4] = 0;
+  }
+  void set_device_name(const char* name) override {
+    name_calls_++;
+    strncpy(name_, name, sizeof(name_) - 1);
+    name_[sizeof(name_) - 1] = 0;
+  }
+  uint8_t ble_clients() override { return ble_clients_; }
+  void fill_status(StatusMessage* status) override {
+    status->wifi_state = status_wifi_state_;
+    strncpy(status->wifi_ssid, "testnet", sizeof(status->wifi_ssid) - 1);
+    status->wifi_ssid[sizeof(status->wifi_ssid) - 1] = 0;
+    const uint8_t ip[4] = {192, 168, 7, 9};
+    memcpy(status->wifi_ipv4.bytes, ip, 4);
+    status->wifi_ipv4.size = 4;
+    status->wifi_port = 5000;
+    status->wifi_rssi = -61;
+  }
+  void apply_wifi(const DeviceSettings& settings) override {
+    apply_wifi_calls_++;
+    wifi_ = settings;
+  }
+  bool wifi_supported() const override { return wifi_supported_; }
+  pb_size_t fill_capabilities(meshpigeon_Capability* out,
+                              pb_size_t max) override {
+    (void)max;
+    out[0] = meshpigeon_Capability_CAPABILITY_BLE;
+    out[1] = meshpigeon_Capability_CAPABILITY_USB_CDC;
+    return 2;
+  }
+
+  meshpigeon_Status_WifiState status_wifi_state_ =
+      meshpigeon_Status_WifiState_WIFI_STATE_CONNECTED;
+  uint16_t battery_mv_ = 3900;
+  uint8_t ble_clients_ = 3;
+  bool wifi_supported_ = true;
+  DeviceSettings wifi_{};
+  char name_[MESHPIGEON_NAME_MAX + 1] = {0};
+  int reboot_calls_ = 0;
+  int bootloader_calls_ = 0;
+  int factory_reset_calls_ = 0;
+  int name_calls_ = 0;
+  int apply_wifi_calls_ = 0;
+};
+
+/** One decoded RadioToClient, as the client side would see it. */
+struct Decoded {
+  RadioToClientMessage msg = RadioToClientMessage_init_zero;
+
+  bool decode(const uint8_t* data, size_t len) {
+    pb_istream_t stream = pb_istream_from_buffer(data, len);
+    msg = RadioToClientMessage_init_zero;
+    return pb_decode(&stream, RadioToClientMessage_fields, &msg);
+  }
+  uint32_t id() const { return msg.id; }
+  pb_size_t which() const { return msg.which_body; }
+  ErrorCode error() const { return msg.body.error.code; }
+  const RadioToClientMessage& m() const { return msg; }
+};
+
 class RecordingSink : public IFrameSink {
  public:
   void send_frame(const uint8_t* decoded, size_t len) override {
-    frames_[count_ % 64] = std::vector<uint8_t>(decoded, decoded + len);
-    lens_[count_ % 64] = len;
-    count_++;
+    Decoded d;
+    bool ok = d.decode(decoded, len);
+    frames_.push_back(d);
+    undecoded_ += ok ? 0 : 1;
   }
-  // Chronological access: frame(0) is the FIRST frame received.
-  const uint8_t* frame(int i) const { return frames_[i % 64].data(); }
-  size_t len(int i) const { return lens_[i % 64]; }
-  uint8_t cmd(int i) const { return frame(i)[0]; }
-  uint8_t nonce(int i) const { return frame(i)[1]; }
-  uint8_t status(int i) const { return frame(i)[2]; }
-  const uint8_t* payload(int i) const { return frame(i) + 3; }
-  size_t payload_len(int i) const { return len(i) - 5; }
+  // Chronological access: at(0) is the FIRST frame received.
+  const Decoded& at(int i) const { return frames_[i]; }
+  size_t count() const { return frames_.size(); }
+  int undecoded() const { return undecoded_; }
+  void clear() { frames_.clear(); }
 
-  std::vector<uint8_t> frames_[64];
-  size_t lens_[64];
-  size_t count_ = 0;
+ private:
+  std::vector<Decoded> frames_;
+  int undecoded_ = 0;
 };
 
 // ---- helpers ----------------------------------------------------------------
@@ -116,28 +185,59 @@ static ManualClock* raw_clock;
 static UptimeClock* clock_;
 static MemorySettingsStore* sstore;
 static FakeRadio* radio;
+static FakeHooks* hooks;
 static CommandProcessor* proc;
 static RecordingSink* sink;
 
 void setUp(void) {
-  store = new PacketStore(1024);  // byte budget: plenty for these tests
+  store = new PacketStore(4096);  // byte budget: plenty for these tests
   raw_clock = new ManualClock(1000);
   clock_ = new UptimeClock(*raw_clock);
   sstore = new MemorySettingsStore();
   radio = new FakeRadio();
+  hooks = new FakeHooks();
   proc = new CommandProcessor(*store, *clock_, *sstore, *radio, "TEST", "0.1");
   sink = new RecordingSink();
+  proc->set_hooks(hooks);
   proc->add_sink(sink);
   proc->boot();
 }
 void tearDown(void) {
   delete sink;
   delete proc;
+  delete hooks;
   delete radio;
   delete sstore;
   delete clock_;
   delete raw_clock;
   delete store;
+}
+
+/** Board loop tick: advance the millis source and let the core observe it. */
+static void tick(uint32_t ms) {
+  raw_clock->advance(ms);
+  proc->poll();
+}
+
+/** Serialize a request envelope and hand it to the core. */
+static void send(const ClientToRadioMessage& req, IFrameSink* from) {
+  uint8_t buf[1024];
+  pb_ostream_t stream = pb_ostream_from_buffer(buf, sizeof(buf));
+  TEST_ASSERT_TRUE_MESSAGE(pb_encode(&stream, ClientToRadioMessage_fields, &req),
+                           "request encode failed");
+  proc->on_envelope(buf, stream.bytes_written, from);
+}
+
+/** Zero-initialized request with the id set, filled by the caller. */
+static ClientToRadioMessage request(uint32_t id) {
+  ClientToRadioMessage req = ClientToRadioMessage_init_zero;
+  req.id = id;
+  return req;
+}
+
+static void set_str(char* dst, size_t cap, const char* src) {
+  memset(dst, 0, cap);
+  strncpy(dst, src, cap - 1);
 }
 
 // ---- tests: framing -----------------------------------------------------------
@@ -163,19 +263,20 @@ void test_cobs_empty() {
 void test_frame_roundtrip_and_crc() {
   uint8_t payload[] = {0xDE, 0xAD, 0xBE, 0xEF};
   uint8_t built[16];
-  size_t n = frame_build(built, CMD_PING, 0x42, STATUS_OK, payload, 4);
-  TEST_ASSERT_EQUAL(9, n);
+  size_t n = frame_build(built, 0, 0, 0, payload, 4);  // v2: payload + crc
+  TEST_ASSERT_EQUAL(6, n);
   // Corrupt one byte -> frame_crc differs
   uint8_t copy[16];
   memcpy(copy, built, n);
-  copy[3] ^= 0xFF;
-  TEST_ASSERT_NOT_EQUAL(frame_crc(copy, n), (uint16_t)(copy[n - 2] | (copy[n - 1] << 8)));
+  copy[0] ^= 0xFF;
+  TEST_ASSERT_NOT_EQUAL(frame_crc(copy, n),
+                        (uint16_t)(copy[n - 2] | (copy[n - 1] << 8)));
 }
 
 void test_frame_reader_stream() {
   uint8_t payload[] = {1, 2, 3};
   uint8_t built[16];
-  size_t n = frame_build(built, CMD_GET_INFO, 0x07, STATUS_OK, payload, 3);
+  size_t n = frame_build(built, 0, 0, 0, payload, 3);
   uint8_t wire[FRAME_MAX_WIRE];
   size_t wl = frame_encode_wire(wire, built, n);
 
@@ -186,16 +287,14 @@ void test_frame_reader_stream() {
     size_t res = r.feed(wire[i], out);
     if (res != 0 && res != (size_t)-1) got = res;
   }
-  TEST_ASSERT_EQUAL(n, got);
-  TEST_ASSERT_EQUAL(CMD_GET_INFO, out[0]);
-  TEST_ASSERT_EQUAL(0x07, out[1]);
-  TEST_ASSERT_EQUAL(STATUS_OK, out[2]);
-  TEST_ASSERT_EQUAL_MEMORY(payload, out + 3, 3);
+  // the CRC is verified and stripped: what comes out is the payload
+  TEST_ASSERT_EQUAL(n - 2, got);
+  TEST_ASSERT_EQUAL_MEMORY(payload, out, 3);
 }
 
 void test_frame_reader_bad_crc_dropped() {
   uint8_t built[16];
-  size_t n = frame_build(built, CMD_PING, 1, STATUS_OK, nullptr, 0);
+  size_t n = frame_build(built, 0, 0, 0, nullptr, 0);
   built[0] ^= 0xFF;  // corrupt
   uint8_t wire[FRAME_MAX_WIRE];
   size_t wl = frame_encode_wire(wire, built, n);
@@ -208,7 +307,7 @@ void test_frame_reader_bad_crc_dropped() {
 
 void test_frame_reader_ignores_garbage_between_frames() {
   uint8_t built[16];
-  size_t n = frame_build(built, CMD_PING, 9, STATUS_OK, nullptr, 0);
+  size_t n = frame_build(built, 0, 0, 0, nullptr, 0);
   uint8_t wire[FRAME_MAX_WIRE];
   size_t wl = frame_encode_wire(wire, built, n);
 
@@ -236,13 +335,13 @@ void test_frame_reader_ignores_garbage_between_frames() {
     }
   }
   TEST_ASSERT_EQUAL((size_t)-1, first);  // garbage frame dropped
-  TEST_ASSERT_EQUAL(n, second);          // good frame decoded
+  TEST_ASSERT_EQUAL(n - 2, second);      // good frame decoded
 }
 
 // ---- tests: packet store ------------------------------------------------------
 
 // Byte cost of one retained packet of the given payload length.
-static uint32_t rec_b(uint8_t len) { return 12 + len; }
+static uint32_t rec_b(uint8_t len) { return 16 + len; }
 
 void test_store_append_and_fetch_order() {
   PacketStore s(rec_b(1) * 4 + 1);  // room for 4 one-byte packets
@@ -276,14 +375,14 @@ void test_store_packs_variable_lengths() {
   one[0] = 0x55;
   memset(mid, 0xBB, sizeof(mid));
   small[0] = 0x11;
-  uint32_t s1 = s.append(0, -70, 9, 0x02, big, 30);    // 42 bytes
-  s.append(0, -70, 9, 0x02, one, 1);                   // 13 bytes
-  uint32_t s3 = s.append(0, -70, 9, 0x02, mid, 40);    // 52 bytes
+  uint32_t s1 = s.append(0, -70, 9, 0x02, big, 30);  // 46 bytes
+  s.append(0, -70, 9, 0x02, one, 1);                 // 17 bytes
+  uint32_t s3 = s.append(0, -70, 9, 0x02, mid, 40);  // 56 bytes
   TEST_ASSERT_EQUAL(3, s.count());
   TEST_ASSERT_EQUAL(rec_b(30) + rec_b(1) + rec_b(40), s.bytes_used());
 
   // a 4th packet that does not fit evicts exactly the oldest one
-  uint32_t s4 = s.append(0, -70, 9, 0x02, small, 20);  // 32 bytes
+  uint32_t s4 = s.append(0, -70, 9, 0x02, small, 20);  // 36 bytes
   TEST_ASSERT_EQUAL(3, s.count());
   TEST_ASSERT_EQUAL(1, s.dropped());
   TEST_ASSERT_EQUAL(2, s.oldest_seq());
@@ -299,15 +398,15 @@ void test_store_packs_variable_lengths() {
 }
 
 void test_store_wraps_tail_to_front() {
-  PacketStore s(64);
+  PacketStore s(80);
   uint8_t one[1] = {0x01}, long_[20];
   memset(long_, 0x22, sizeof(long_));
-  s.append(0, -70, 9, 0x02, one, 1);    // seq 1: [0..13)
-  s.append(0, -70, 9, 0x02, one, 1);    // seq 2: [13..26)
-  s.append(0, -70, 9, 0x02, long_, 20); // seq 3: [26..58), 6 bytes left
+  s.append(0, -70, 9, 0x02, one, 1);    // seq 1: [0..17)
+  s.append(0, -70, 9, 0x02, one, 1);    // seq 2: [17..34)
+  s.append(0, -70, 9, 0x02, long_, 20); // seq 3: [34..70), 10 bytes left
   TEST_ASSERT_EQUAL(3, s.count());
 
-  // 13 bytes do not fit at the tail: evict seq 1, wrap tail to the front
+  // 17 bytes do not fit at the tail: evict seq 1, wrap tail to the front
   uint32_t s4 = s.append(0, -70, 9, 0x02, one, 1);
   TEST_ASSERT_EQUAL(4, s4);
   TEST_ASSERT_EQUAL(3, s.count());
@@ -329,12 +428,12 @@ void test_store_wraps_tail_to_front() {
   TEST_ASSERT_EQUAL(4, seqs[2]);
 
   // fill the wrapped hole, then overflow-evict cleanly
-  s.append(0, -70, 9, 0x02, one, 1);    // seq 5: fills the hole at [13..26)
+  s.append(0, -70, 9, 0x02, one, 1);  // seq 5: fills the hole at [17..34)
   TEST_ASSERT_EQUAL(3, s.count());
   TEST_ASSERT_EQUAL(6, s.next_seq());
   TEST_ASSERT_EQUAL(2, s.dropped());
   TEST_ASSERT_EQUAL(3, s.oldest_seq());
-  s.append(0, -70, 9, 0x02, one, 1);    // seq 6: evicts seq 3, ring goes linear again
+  s.append(0, -70, 9, 0x02, one, 1);  // seq 6: evicts seq 3, ring goes linear
   TEST_ASSERT_EQUAL(3, s.count());
   TEST_ASSERT_EQUAL(3, s.dropped());
   TEST_ASSERT_EQUAL(4, s.oldest_seq());
@@ -342,7 +441,7 @@ void test_store_wraps_tail_to_front() {
 }
 
 void test_store_oversize_packet_never_fits() {
-  PacketStore s(64);  // smaller than 12 + 200
+  PacketStore s(64);  // smaller than 16 + 255
   uint8_t big[MESHPIGEON_MAX_RAW_PACKET];
   memset(big, 0x77, sizeof(big));
   TEST_ASSERT_EQUAL(0, s.append(0, -70, 9, 0x02, big, MESHPIGEON_MAX_RAW_PACKET));
@@ -353,17 +452,18 @@ void test_store_oversize_packet_never_fits() {
 }
 
 void test_store_max_size_packet_roundtrip() {
-  PacketStore s(12 + MESHPIGEON_MAX_RAW_PACKET);
+  PacketStore s(rec_b(MESHPIGEON_MAX_RAW_PACKET));
   uint8_t big[MESHPIGEON_MAX_RAW_PACKET];
   for (int i = 0; i < MESHPIGEON_MAX_RAW_PACKET; i++) big[i] = (uint8_t)i;
-  uint32_t sq = s.append(1234, -100, -5, 0x01, big, MESHPIGEON_MAX_RAW_PACKET);
+  uint32_t sq = s.append(0x1FFFFFFFFULL, -100, -5, 0x01, big,
+                         MESHPIGEON_MAX_RAW_PACKET);
   TEST_ASSERT_EQUAL(1, sq);
   StoredPacket e;
   TEST_ASSERT_TRUE(s.get(sq, &e));
   TEST_ASSERT_EQUAL(MESHPIGEON_MAX_RAW_PACKET, e.len);
   TEST_ASSERT_EQUAL_MEMORY(big, e.raw, MESHPIGEON_MAX_RAW_PACKET);
   TEST_ASSERT_EQUAL(-100, e.rssi);
-  TEST_ASSERT_EQUAL(1234, e.uptime_ms);
+  TEST_ASSERT_EQUAL(0x1FFFFFFFFULL, e.uptime_ms);  // 64-bit survives the ring
 }
 
 void test_store_since_cursor_is_resumable() {
@@ -400,7 +500,7 @@ void test_store_purge_resets_history() {
 void test_store_randomized_matches_model() {
   // Deterministic PRNG stress: compare against a simple reference model.
   PacketStore s(100);
-  std::vector<uint32_t> seqs;   // model: retained seqs, oldest first
+  std::vector<uint32_t> seqs;  // model: retained seqs, oldest first
   uint8_t payload[MESHPIGEON_MAX_RAW_PACKET];
   for (int i = 0; i < (int)sizeof(payload); i++) payload[i] = (uint8_t)(i * 7);
   uint64_t rng = 0x12345678;
@@ -455,29 +555,84 @@ void test_settings_bad_size_rejected() {
   TEST_ASSERT_FALSE(t.deserialize(buf, sizeof(buf)));
 }
 
-// ---- tests: command processor ---------------------------------------------------
+void test_device_settings_defaults_and_validation() {
+  DeviceSettings d = DeviceSettings::defaults();
+  TEST_ASSERT_TRUE(d.pin_is_default());
+  TEST_ASSERT_EQUAL(MESHPIGEON_WIFI_PORT_DEFAULT, d.wifi_port);
+  TEST_ASSERT_FALSE(d.wifi_enabled);
+  TEST_ASSERT_TRUE(DeviceSettings::valid_pin("1234", 4));
+  TEST_ASSERT_TRUE(DeviceSettings::valid_pin("12345678", 8));
+  TEST_ASSERT_FALSE(DeviceSettings::valid_pin("123", 3));    // too short
+  TEST_ASSERT_FALSE(DeviceSettings::valid_pin("123456789", 9));  // too long
+  TEST_ASSERT_FALSE(DeviceSettings::valid_pin("12a4", 4));   // not digits
+  TEST_ASSERT_FALSE(DeviceSettings::valid_port(0));
+  d.clear();
+  TEST_ASSERT_TRUE(d.pin_is_default());
+}
+
+// ---- tests: envelopes ----------------------------------------------------------
 
 void test_ping_echoes() {
-  uint8_t payload[] = {0xAB, 0xCD};
-  proc->on_frame(CMD_PING, 0x11, 0, payload, 2, sink);
-  TEST_ASSERT_EQUAL(1, sink->count_);
-  TEST_ASSERT_EQUAL(CMD_PING, sink->cmd(0));
-  TEST_ASSERT_EQUAL(0x11, sink->nonce(0));
-  TEST_ASSERT_EQUAL(STATUS_OK, sink->status(0));
-  TEST_ASSERT_EQUAL_MEMORY(payload, sink->payload(0), 2);
+  ClientToRadioMessage req = request(0x11);
+  req.which_body = kOpPing;
+  const uint8_t payload[] = {0xAB, 0xCD};
+  req.body.ping.payload.size = sizeof(payload);
+  memcpy(req.body.ping.payload.bytes, payload, sizeof(payload));
+  send(req, sink);
+
+  TEST_ASSERT_EQUAL(1, sink->count());
+  TEST_ASSERT_EQUAL(0, sink->undecoded());
+  TEST_ASSERT_EQUAL(0x11, sink->at(0).id());
+  TEST_ASSERT_EQUAL(meshpigeon_RadioToClient_pong_tag, sink->at(0).which());
+  TEST_ASSERT_EQUAL_MEMORY(payload, sink->at(0).m().body.pong.payload.bytes, 2);
 }
 
-void test_unknown_command_errors() {
-  proc->on_frame(0x77, 1, 0, nullptr, 0, sink);
-  TEST_ASSERT_EQUAL(STATUS_ERR_BAD_CMD, sink->status(0));
+void test_ping_skips_unknown_fields() {
+  // A newer client appends a field this firmware predates: unknown fields
+  // are skipped, the PING still answers (evolution policy).
+  ClientToRadioMessage req = request(7);
+  req.which_body = kOpPing;
+  send(req, sink);
+  TEST_ASSERT_EQUAL(1, sink->count());
+
+  uint8_t buf[64];
+  pb_ostream_t stream = pb_ostream_from_buffer(buf, sizeof(buf));
+  TEST_ASSERT_TRUE(pb_encode(&stream, ClientToRadioMessage_fields, &req));
+  size_t n = stream.bytes_written;
+  const uint8_t junk[] = {0x98, 0x06, 0x01};  // field 99, varint 1
+  memcpy(buf + n, junk, sizeof(junk));
+  proc->on_envelope(buf, n + sizeof(junk), sink);
+  TEST_ASSERT_EQUAL(2, sink->count());
+  TEST_ASSERT_EQUAL(meshpigeon_RadioToClient_pong_tag, sink->at(1).which());
 }
+
+void test_unknown_operation_errors() {
+  // Field 20 with an empty message: an operation this firmware predates.
+  const uint8_t frame[] = {0x08, 0x01, 0xA2, 0x01, 0x00};
+  proc->on_envelope(frame, sizeof(frame), sink);
+  TEST_ASSERT_EQUAL(1, sink->count());
+  TEST_ASSERT_EQUAL(meshpigeon_RadioToClient_error_tag, sink->at(0).which());
+  TEST_ASSERT_EQUAL(meshpigeon_Error_ErrorCode_ERROR_CODE_BAD_COMMAND,
+                    sink->at(0).error());
+}
+
+void test_malformed_or_unidentified_envelope_dropped() {
+  uint8_t garbage[] = {0xFF, 0xFF, 0xFF, 0xFF};
+  proc->on_envelope(garbage, sizeof(garbage), sink);
+  // A decodable envelope with no id cannot be answered: silent drop.
+  ClientToRadioMessage req = request(0);
+  req.which_body = kOpPing;
+  send(req, sink);
+  TEST_ASSERT_EQUAL(0, sink->count());
+}
+
+// ---- tests: radio settings ------------------------------------------------------
 
 void test_boot_uses_persisted_settings() {
   RadioSettings s = make_settings(7, 5);
   sstore->save(s);
-  // fresh processor (setUp made one) — boot again with settings present
-  proc->boot();
-  TEST_ASSERT_EQUAL(2, radio->apply_calls_);  // setUp boot + this boot
+  proc->boot();  // setUp already booted once
+  TEST_ASSERT_EQUAL(2, radio->apply_calls_);
   TEST_ASSERT_TRUE(radio->applied_ == s);
 }
 
@@ -485,72 +640,164 @@ void test_boot_first_time_uses_safe_default() {
   TEST_ASSERT_TRUE(radio->applied_ == RadioSettings::unset());
 }
 
+void test_get_radio_settings() {
+  ClientToRadioMessage req = request(3);
+  req.which_body = kOpGetRadioSettings;
+  send(req, sink);
+  TEST_ASSERT_EQUAL(1, sink->count());
+  const RadioSettingsMessage& m = sink->at(0).m().body.radio_settings;
+  TEST_ASSERT_EQUAL(meshpigeon_RadioToClient_radio_settings_tag,
+                    sink->at(0).which());
+  TEST_ASSERT_EQUAL(3, sink->at(0).id());
+  TEST_ASSERT_EQUAL(RadioSettings::unset().freq_hz, m.freq_hz);
+  TEST_ASSERT_EQUAL(125000u, m.bandwidth_hz);  // 0.01 kHz units -> Hz
+}
+
 void test_set_radio_persists_and_applies() {
-  RadioSettings s = make_settings(2, 99);  // epoch ignored: radio bumps it
-  uint8_t buf[RadioSettings::kSerializedSize];
-  s.serialize(buf);
-  proc->on_frame(CMD_SET_RADIO, 0x22, 0, buf, sizeof(buf), sink);
-  TEST_ASSERT_EQUAL(1, sink->count_);
-  TEST_ASSERT_EQUAL(STATUS_OK, sink->status(0));
-  RadioSettings echoed;
-  TEST_ASSERT_TRUE(echoed.deserialize(sink->payload(0), sink->payload_len(0)));
-  TEST_ASSERT_EQUAL(2, echoed.region);
-  TEST_ASSERT_EQUAL(1, echoed.config_epoch);  // bumped by radio
-  TEST_ASSERT_TRUE(proc->settings() == echoed);
+  ClientToRadioMessage req = request(0x22);
+  req.which_body = kOpSetRadioSettings;
+  req.body.set_radio_settings.has_settings = true;
+  RadioSettingsMessage& m = req.body.set_radio_settings.settings;
+  m.freq_hz = 906875000;
+  m.bandwidth_hz = 125000;
+  m.sf = 9;
+  m.cr = 5;
+  m.power_dbm = 22;
+  send(req, sink);
+
+  TEST_ASSERT_EQUAL(1, sink->count());
+  TEST_ASSERT_EQUAL(meshpigeon_RadioToClient_radio_settings_tag,
+                    sink->at(0).which());
+  const RadioSettingsMessage& echo = sink->at(0).m().body.radio_settings;
+  TEST_ASSERT_EQUAL(906875000u, echo.freq_hz);
+  TEST_ASSERT_EQUAL(1, echo.config_epoch);  // bumped by the firmware
+  // the radio saw the tuning as requested; the firmware then bumped the epoch
+  TEST_ASSERT_EQUAL(906875000u, radio->applied_.freq_hz);
+  TEST_ASSERT_EQUAL(9, radio->applied_.sf);
+  TEST_ASSERT_EQUAL(1, proc->settings().config_epoch);
+  // applied to the radio, with the internal units
+  TEST_ASSERT_EQUAL(12500, radio->applied_.bw_x100khz);
+  TEST_ASSERT_EQUAL(0, radio->applied_.region);  // regions are gone in v2
   // persisted for next boot
   RadioSettings loaded;
   TEST_ASSERT_TRUE(sstore->load(&loaded));
-  TEST_ASSERT_TRUE(loaded == echoed);
+  TEST_ASSERT_TRUE(loaded == proc->settings());  // including the bumped epoch
 }
 
 void test_set_radio_bad_payload() {
-  uint8_t buf[4] = {1, 2, 3, 4};
-  proc->on_frame(CMD_SET_RADIO, 1, 0, buf, sizeof(buf), sink);
-  TEST_ASSERT_EQUAL(STATUS_ERR_BAD_PAYLOAD, sink->status(0));
+  ClientToRadioMessage req = request(1);
+  req.which_body = kOpSetRadioSettings;
+  req.body.set_radio_settings.has_settings = true;
+  RadioSettingsMessage& m = req.body.set_radio_settings.settings;
+  m.freq_hz = 0;  // no frequency
+  m.bandwidth_hz = 125000;
+  m.sf = 9;
+  m.cr = 5;
+  send(req, sink);
+  TEST_ASSERT_EQUAL(meshpigeon_Error_ErrorCode_ERROR_CODE_BAD_PAYLOAD,
+                    sink->at(0).error());
+  // SF out of range is rejected the same way
+  sink->clear();
+  req.id = 2;
+  m.freq_hz = 906875000;
+  m.sf = 13;
+  send(req, sink);
+  TEST_ASSERT_EQUAL(meshpigeon_Error_ErrorCode_ERROR_CODE_BAD_PAYLOAD,
+                    sink->at(0).error());
+}
+
+void test_set_radio_apply_failure_is_tx_failed() {
+  radio->apply_ok_ = false;
+  ClientToRadioMessage req = request(1);
+  req.which_body = kOpSetRadioSettings;
+  req.body.set_radio_settings.has_settings = true;
+  RadioSettingsMessage& m = req.body.set_radio_settings.settings;
+  m.freq_hz = 906875000;
+  m.bandwidth_hz = 125000;
+  m.sf = 9;
+  m.cr = 5;
+  send(req, sink);
+  TEST_ASSERT_EQUAL(meshpigeon_Error_ErrorCode_ERROR_CODE_TX_FAILED,
+                    sink->at(0).error());
+  TEST_ASSERT_EQUAL(0, proc->settings().config_epoch);  // nothing applied
 }
 
 void test_first_owner_lock_honors_only_first_set() {
-  RadioSettings s = make_settings(1, 0);
-  uint8_t buf[RadioSettings::kSerializedSize];
-  s.serialize(buf);
-  proc->on_frame(CMD_SET_RADIO, 1, 0, buf, sizeof(buf), sink);
-  TEST_ASSERT_EQUAL(STATUS_OK, sink->status(0));
+  ClientToRadioMessage req = request(1);
+  req.which_body = kOpSetRadioSettings;
+  req.body.set_radio_settings.has_settings = true;
+  RadioSettingsMessage& m = req.body.set_radio_settings.settings;
+  m.freq_hz = 906875000;
+  m.bandwidth_hz = 125000;
+  m.sf = 9;
+  m.cr = 5;
+  send(req, sink);
+  TEST_ASSERT_EQUAL(meshpigeon_RadioToClient_radio_settings_tag,
+                    sink->at(0).which());
+
   // second client tries within the 5-minute grace window
   RecordingSink other;
   proc->add_sink(&other);
-  proc->on_frame(CMD_SET_RADIO, 2, 0, buf, sizeof(buf), &other);
-  TEST_ASSERT_EQUAL(STATUS_ERR_BUSY, other.status(0));
-  // after grace window, re-tune allowed
-  raw_clock->advance(6 * 60 * 1000);
-  proc->on_frame(CMD_SET_RADIO, 3, 0, buf, sizeof(buf), &other);
-  TEST_ASSERT_EQUAL(STATUS_OK, other.status(1));  // (0) was the earlier BUSY
+  req.id = 2;
+  send(req, &other);
+  TEST_ASSERT_EQUAL(meshpigeon_Error_ErrorCode_ERROR_CODE_BUSY, other.at(0).error());
+
+  // after the grace window, re-tuning is allowed again
+  tick(6 * 60 * 1000);
+  req.id = 3;
+  send(req, &other);
+  TEST_ASSERT_EQUAL(meshpigeon_RadioToClient_radio_settings_tag, other.at(1).which());
   proc->remove_sink(&other);
 }
 
+void test_radio_changed_broadcast_to_others() {
+  RecordingSink other;
+  proc->add_sink(&other);
+  ClientToRadioMessage req = request(1);
+  req.which_body = kOpSetRadioSettings;
+  req.body.set_radio_settings.has_settings = true;
+  RadioSettingsMessage& m = req.body.set_radio_settings.settings;
+  m.freq_hz = 906875000;
+  m.bandwidth_hz = 125000;
+  m.sf = 9;
+  m.cr = 5;
+  send(req, sink);
+
+  // the originator gets its own echo only; the other client gets the push
+  TEST_ASSERT_EQUAL(1, sink->count());
+  TEST_ASSERT_EQUAL(1, other.count());
+  TEST_ASSERT_EQUAL(meshpigeon_RadioToClient_radio_settings_tag, other.at(0).which());
+  TEST_ASSERT_EQUAL(0, other.at(0).id());  // async push
+  TEST_ASSERT_EQUAL(1, other.at(0).m().body.radio_settings.config_epoch);
+  proc->remove_sink(&other);
+}
+
+// ---- tests: packet store over the wire ------------------------------------------
+
 void test_send_packet_roundtrip() {
   radio->tx_async_ = true;  // TX in flight until poll()
-  uint8_t pkt[] = {0x45, 0x01, 0x02, 0x03, 0x04};
-  uint8_t payload[1 + sizeof(pkt)];
-  payload[0] = sizeof(pkt);
-  memcpy(payload + 1, pkt, sizeof(pkt));
-  proc->on_frame(CMD_SEND_PACKET, 0x33, 0, payload, sizeof(payload), sink);
-  TEST_ASSERT_EQUAL(STATUS_OK, sink->status(0));
-  uint32_t seq;
-  memcpy(&seq, sink->payload(0), 4);
+  const uint8_t pkt[] = {0x45, 0x01, 0x02, 0x03, 0x04};
+  ClientToRadioMessage req = request(0x33);
+  req.which_body = kOpSendPacket;
+  req.body.send_packet.raw.size = sizeof(pkt);
+  memcpy(req.body.send_packet.raw.bytes, pkt, sizeof(pkt));
+  send(req, sink);
+
+  TEST_ASSERT_EQUAL(meshpigeon_RadioToClient_packet_accepted_tag, sink->at(0).which());
+  uint32_t seq = sink->at(0).m().body.packet_accepted.seq;
   TEST_ASSERT_EQUAL(1, seq);
   TEST_ASSERT_EQUAL(1, radio->tx_calls_);
   TEST_ASSERT_EQUAL_MEMORY(pkt, radio->last_tx_, sizeof(pkt));
-  TEST_ASSERT_EQUAL(1, sink->count_);  // no TX_RESULT yet
-  proc->poll();                        // radio still busy
-  TEST_ASSERT_EQUAL(1, sink->count_);
+  TEST_ASSERT_EQUAL(1, sink->count());  // no TX_RESULT yet
+  tick(0);                             // radio still busy
+  TEST_ASSERT_EQUAL(1, sink->count());
   radio->complete_tx();
-  proc->poll();                        // now TX completes
-  TEST_ASSERT_EQUAL(2, sink->count_);
-  TEST_ASSERT_EQUAL(CMD_TX_RESULT, sink->cmd(1));
-  uint32_t rseq;
-  memcpy(&rseq, sink->payload(1), 4);
-  TEST_ASSERT_EQUAL(seq, rseq);
-  TEST_ASSERT_EQUAL(STATUS_OK, sink->payload(1)[4]);
+  tick(0);  // now TX completes
+  TEST_ASSERT_EQUAL(2, sink->count());
+  TEST_ASSERT_EQUAL(meshpigeon_RadioToClient_tx_result_tag, sink->at(1).which());
+  TEST_ASSERT_EQUAL(0, sink->at(1).id());  // async
+  TEST_ASSERT_EQUAL(seq, sink->at(1).m().body.tx_result.seq);
+  TEST_ASSERT_TRUE(sink->at(1).m().body.tx_result.success);
   // stored as sent
   StoredPacket e;
   TEST_ASSERT_TRUE(store->get(seq, &e));
@@ -559,118 +806,553 @@ void test_send_packet_roundtrip() {
 
 void test_send_packet_tx_failure_reports_result() {
   radio->tx_ok_ = false;  // radio refuses to start
-  uint8_t payload[] = {1, 0x42};
-  proc->on_frame(CMD_SEND_PACKET, 1, 0, payload, 2, sink);
-  TEST_ASSERT_EQUAL(STATUS_OK, sink->status(0));  // accepted, tx failed async
-  TEST_ASSERT_EQUAL(2, sink->count_);             // immediate TX_RESULT
-  TEST_ASSERT_EQUAL(CMD_TX_RESULT, sink->cmd(1));
-  TEST_ASSERT_EQUAL(STATUS_ERR_TX_FAILED, sink->payload(1)[4]);
+  ClientToRadioMessage req = request(1);
+  req.which_body = kOpSendPacket;
+  req.body.send_packet.raw.size = 1;
+  req.body.send_packet.raw.bytes[0] = 0x42;
+  send(req, sink);
+  TEST_ASSERT_EQUAL(meshpigeon_RadioToClient_packet_accepted_tag, sink->at(0).which());
+  TEST_ASSERT_EQUAL(2, sink->count());  // immediate TX_RESULT
+  TEST_ASSERT_EQUAL(meshpigeon_RadioToClient_tx_result_tag, sink->at(1).which());
+  TEST_ASSERT_FALSE(sink->at(1).m().body.tx_result.success);
 }
 
 void test_send_packet_busy_when_second_in_flight() {
   radio->tx_async_ = true;
-  uint8_t payload[] = {1, 0x42};
-  proc->on_frame(CMD_SEND_PACKET, 1, 0, payload, 2, sink);
-  TEST_ASSERT_EQUAL(STATUS_OK, sink->status(0));
-  proc->on_frame(CMD_SEND_PACKET, 2, 0, payload, 2, sink);
-  TEST_ASSERT_EQUAL(STATUS_ERR_BUSY, sink->status(1));
+  ClientToRadioMessage req = request(1);
+  req.which_body = kOpSendPacket;
+  req.body.send_packet.raw.size = 1;
+  req.body.send_packet.raw.bytes[0] = 0x42;
+  send(req, sink);
+  req.id = 2;
+  send(req, sink);
+  TEST_ASSERT_EQUAL(meshpigeon_Error_ErrorCode_ERROR_CODE_BUSY, sink->at(1).error());
 }
 
-void test_send_packet_bad_length_prefix() {
-  uint8_t payload[] = {5, 1, 2};  // claims 5 bytes, carries 2
-  proc->on_frame(CMD_SEND_PACKET, 1, 0, payload, 3, sink);
-  TEST_ASSERT_EQUAL(STATUS_ERR_BAD_PAYLOAD, sink->status(0));
+void test_send_packet_bad_length() {
+  ClientToRadioMessage req = request(1);
+  req.which_body = kOpSendPacket;
+  req.body.send_packet.raw.size = 0;  // nothing to send
+  send(req, sink);
+  TEST_ASSERT_EQUAL(meshpigeon_Error_ErrorCode_ERROR_CODE_BAD_PAYLOAD,
+                    sink->at(0).error());
+}
+
+void test_send_packet_max_raw_size_accepted() {
+  ClientToRadioMessage req = request(1);
+  req.which_body = kOpSendPacket;
+  req.body.send_packet.raw.size = MESHPIGEON_MAX_RAW_PACKET;
+  for (uint16_t i = 0; i < MESHPIGEON_MAX_RAW_PACKET; i++) {
+    req.body.send_packet.raw.bytes[i] = (uint8_t)i;
+  }
+  send(req, sink);
+  TEST_ASSERT_EQUAL(meshpigeon_RadioToClient_packet_accepted_tag, sink->at(0).which());
+  TEST_ASSERT_EQUAL(1, radio->tx_calls_);
 }
 
 void test_fetch_packets_streams_entries_and_end() {
-  uint8_t pkt[] = {0x45, 0x06};
+  const uint8_t pkt[] = {0x45, 0x06};
+  for (int i = 0; i < 3; i++) proc->on_packet_received(-72, 8, pkt, sizeof(pkt));
+  sink->clear();
+  ClientToRadioMessage req = request(0x55);
+  req.which_body = kOpFetchPackets;
+  req.body.fetch_packets.since_seq = 0;
+  req.body.fetch_packets.max_count = 10;
+  send(req, sink);
+
+  // 3 entry frames then FETCH_END, in order, all echoing the request id
+  TEST_ASSERT_EQUAL(4, sink->count());
   for (int i = 0; i < 3; i++) {
-    radio->push_rx(pkt, sizeof(pkt), -72, 8);
-    proc->on_packet_received(-72, 8, pkt, sizeof(pkt));
+    TEST_ASSERT_EQUAL(meshpigeon_RadioToClient_packet_entry_tag, sink->at(i).which());
+    TEST_ASSERT_EQUAL(0x55, sink->at(i).id());
+    TEST_ASSERT_EQUAL(i + 1, sink->at(i).m().body.packet_entry.seq);
+    TEST_ASSERT_EQUAL(meshpigeon_PacketEntry_Origin_ORIGIN_RECEIVED,
+                      sink->at(i).m().body.packet_entry.origin);
+    TEST_ASSERT_EQUAL_MEMORY(pkt, sink->at(i).m().body.packet_entry.raw.bytes, 2);
   }
-  RecordingSink fetcher;
-  proc->add_sink(&fetcher);
-  uint8_t req[6] = {0, 0, 0, 0, 10, 0};  // since 0, max 10
-  proc->on_frame(CMD_FETCH_PACKETS, 0x55, 0, req, 6, &fetcher);
-  // 3 entry frames (RX_PACKET w/ request nonce) + FETCH_END, in order
-  TEST_ASSERT_EQUAL(4, fetcher.count_);
-  TEST_ASSERT_EQUAL(CMD_RX_PACKET, fetcher.cmd(0));
-  TEST_ASSERT_EQUAL(0x55, fetcher.nonce(0));
-  TEST_ASSERT_EQUAL(CMD_FETCH_END, fetcher.cmd(3));
-  TEST_ASSERT_EQUAL(0x55, fetcher.nonce(3));
-  uint16_t endcount =
-      (uint16_t)(fetcher.payload(3)[0] | (fetcher.payload(3)[1] << 8));
-  TEST_ASSERT_EQUAL(3, endcount);
-  proc->remove_sink(&fetcher);
+  TEST_ASSERT_EQUAL(meshpigeon_RadioToClient_fetch_end_tag, sink->at(3).which());
+  TEST_ASSERT_EQUAL(3, sink->at(3).m().body.fetch_end.count);
 }
 
 void test_fetch_packets_since_cursor_skips_old() {
-  uint8_t pkt[] = {0x45, 0x06};
+  const uint8_t pkt[] = {0x45, 0x06};
   for (int i = 0; i < 3; i++) proc->on_packet_received(-72, 8, pkt, sizeof(pkt));
-  RecordingSink fetcher;
-  proc->add_sink(&fetcher);
-  uint8_t req[6] = {1, 0, 0, 0, 10, 0};  // since seq 1 -> seqs 2,3
-  proc->on_frame(CMD_FETCH_PACKETS, 0x56, 0, req, 6, &fetcher);
-  TEST_ASSERT_EQUAL(3, fetcher.count_);  // 2 entries + END
-  uint16_t endcount =
-      (uint16_t)(fetcher.payload(2)[0] | (fetcher.payload(2)[1] << 8));
-  TEST_ASSERT_EQUAL(2, endcount);
-  proc->remove_sink(&fetcher);
+  sink->clear();
+  ClientToRadioMessage req = request(0x56);
+  req.which_body = kOpFetchPackets;
+  req.body.fetch_packets.since_seq = 1;  // seqs 2,3
+  req.body.fetch_packets.max_count = 10;
+  send(req, sink);
+  TEST_ASSERT_EQUAL(3, sink->count());  // 2 entries + END
+  TEST_ASSERT_EQUAL(2, sink->at(2).m().body.fetch_end.count);
+  TEST_ASSERT_EQUAL(2, sink->at(0).m().body.packet_entry.seq);
 }
 
-void test_rx_packet_pushes_to_all_sinks_except_none() {
-  uint8_t pkt[] = {0x45, 0x07, 0x08};
+void test_rx_packet_pushes_to_all_sinks() {
+  const uint8_t pkt[] = {0x45, 0x07, 0x08};
   RecordingSink a, b;
   proc->add_sink(&a);
   proc->add_sink(&b);
   proc->on_packet_received(-80, 10, pkt, sizeof(pkt));
-  TEST_ASSERT_EQUAL(1, a.count_);
-  TEST_ASSERT_EQUAL(1, b.count_);
-  TEST_ASSERT_EQUAL(CMD_RX_PACKET, a.cmd(0));
-  TEST_ASSERT_EQUAL(0, a.nonce(0));  // async: nonce 0
-  uint32_t seq;
-  memcpy(&seq, a.payload(0), 4);
-  TEST_ASSERT_EQUAL(1, seq);
-  TEST_ASSERT_EQUAL(0x02, a.payload(0)[10]);  // flags = received
-  TEST_ASSERT_EQUAL(3, a.payload(0)[11]);     // len
-  TEST_ASSERT_EQUAL_MEMORY(pkt, a.payload(0) + 12, 3);
+  TEST_ASSERT_EQUAL(1, a.count());
+  TEST_ASSERT_EQUAL(1, b.count());
+  TEST_ASSERT_EQUAL(meshpigeon_RadioToClient_packet_entry_tag, a.at(0).which());
+  TEST_ASSERT_EQUAL(0, a.at(0).id());  // async
+  TEST_ASSERT_EQUAL(1, a.at(0).m().body.packet_entry.seq);
+  TEST_ASSERT_EQUAL(-80, a.at(0).m().body.packet_entry.rssi);
+  TEST_ASSERT_EQUAL(10, a.at(0).m().body.packet_entry.snr);
+  TEST_ASSERT_EQUAL(sizeof(pkt), a.at(0).m().body.packet_entry.raw.size);
+  TEST_ASSERT_EQUAL_MEMORY(pkt, a.at(0).m().body.packet_entry.raw.bytes, 3);
   proc->remove_sink(&a);
   proc->remove_sink(&b);
 }
 
-void test_radio_changed_broadcast_to_others() {
-  RecordingSink other;
-  proc->add_sink(&other);
-  RadioSettings s = make_settings(4, 0);
-  uint8_t buf[RadioSettings::kSerializedSize];
-  s.serialize(buf);
-  proc->on_frame(CMD_SET_RADIO, 1, 0, buf, sizeof(buf), sink);
-  // originator gets OK only; other client gets RADIO_CHANGED
-  TEST_ASSERT_EQUAL(1, sink->count_);
-  TEST_ASSERT_EQUAL(1, other.count_);
-  TEST_ASSERT_EQUAL(CMD_RADIO_CHANGED, other.cmd(0));
-  TEST_ASSERT_EQUAL(0, other.nonce(0));
-  RadioSettings changed;
-  TEST_ASSERT_TRUE(changed.deserialize(other.payload(0) + 4, other.payload_len(0) - 4));
-  TEST_ASSERT_EQUAL(4, changed.region);
-  proc->remove_sink(&other);
-}
-
 void test_purge_store() {
-  uint8_t pkt[] = {0x45};
+  const uint8_t pkt[] = {0x45};
   proc->on_packet_received(-80, 10, pkt, 1);
   TEST_ASSERT_EQUAL(1, store->count());
-  proc->on_frame(CMD_PURGE_STORE, 1, 0, nullptr, 0, sink);
-  TEST_ASSERT_EQUAL(STATUS_OK, sink->status(0));
+  sink->clear();
+  ClientToRadioMessage req = request(1);
+  req.which_body = kOpPurgeStore;
+  send(req, sink);
+  TEST_ASSERT_EQUAL(meshpigeon_RadioToClient_ok_tag, sink->at(0).which());
   TEST_ASSERT_EQUAL(0, store->count());
 }
 
-void test_get_info_shape() {
-  proc->on_frame(CMD_GET_INFO, 0x66, 0, nullptr, 0, sink);
-  TEST_ASSERT_EQUAL(STATUS_OK, sink->status(0));
-  TEST_ASSERT_EQUAL(49, sink->payload_len(0));
-  TEST_ASSERT_EQUAL(MESHPIGEON_PROTOCOL_VERSION, sink->payload(0)[0]);
-  TEST_ASSERT_EQUAL_MEMORY("TEST", sink->payload(0) + 3, 4);
+// ---- tests: device identity, settings, auth -------------------------------------
+
+void test_device_info() {
+  ClientToRadioMessage req = request(1);
+  req.which_body = kOpGetDeviceInfo;
+  send(req, sink);
+  TEST_ASSERT_EQUAL(meshpigeon_RadioToClient_device_info_tag, sink->at(0).which());
+  const DeviceInfoMessage& m = sink->at(0).m().body.device_info;
+  TEST_ASSERT_EQUAL(MESHPIGEON_SPEC_VERSION, m.spec_version);
+  TEST_ASSERT_EQUAL_STRING("TEST", m.board_name);
+  TEST_ASSERT_EQUAL_STRING("0.1", m.fw_version);
+  TEST_ASSERT_EQUAL(2, m.capabilities_count);
+  TEST_ASSERT_EQUAL(meshpigeon_Capability_CAPABILITY_BLE, m.capabilities[0]);
+  TEST_ASSERT_EQUAL(meshpigeon_Capability_CAPABILITY_USB_CDC, m.capabilities[1]);
+  TEST_ASSERT_EQUAL(0, store->count());
+  TEST_ASSERT_EQUAL(store->capacity(), m.store.capacity_bytes);
+  TEST_ASSERT_EQUAL(3900, m.battery_mv);
+  TEST_ASSERT_TRUE(m.radio_ok);
+  TEST_ASSERT_FALSE(m.auth_required);  // default PIN: no lock
+  TEST_ASSERT_EQUAL(0, m.radio_config_epoch);
+  // store stats track reality
+  const uint8_t pkt[] = {0x45};
+  proc->on_packet_received(-80, 10, pkt, 1);
+  sink->clear();
+  send(req, sink);
+  TEST_ASSERT_EQUAL(1, sink->at(0).m().body.device_info.store.count);
+  TEST_ASSERT_EQUAL(1, sink->at(0).m().body.device_info.store.oldest_seq);
+}
+
+void test_device_info_radio_failure() {
+  radio->apply_ok_ = false;
+  proc->boot();
+  sink->clear();
+  ClientToRadioMessage req = request(1);
+  req.which_body = kOpGetDeviceInfo;
+  send(req, sink);
+  TEST_ASSERT_FALSE(sink->at(0).m().body.device_info.radio_ok);
+}
+
+/** Set a PIN on the fixture and return a fresh, locked-down client sink. */
+static RecordingSink* lock_with_pin(const char* pin) {
+  ClientToRadioMessage req = request(1);
+  req.which_body = kOpSetDeviceSettings;
+  req.body.set_device_settings.has_pin = true;
+  set_str(req.body.set_device_settings.pin, sizeof(req.body.set_device_settings.pin),
+          pin);
+  send(req, sink);
+  sink->clear();
+  return sink;
+}
+
+void test_device_settings_defaults() {
+  ClientToRadioMessage req = request(1);
+  req.which_body = kOpGetDeviceSettings;
+  send(req, sink);
+  TEST_ASSERT_EQUAL(meshpigeon_RadioToClient_device_settings_tag, sink->at(0).which());
+  const DeviceSettingsMessage& m = sink->at(0).m().body.device_settings;
+  // no stored name -> derived from the MAC suffix the hook provides
+  TEST_ASSERT_EQUAL_STRING("MeshPigeon-A3F2", m.name);
+  TEST_ASSERT_FALSE(m.wifi_enabled);
+  TEST_ASSERT_EQUAL(MESHPIGEON_WIFI_PORT_DEFAULT, m.wifi_port);
+  // the PIN is write-only: DeviceSettingsMessage has no field for it
+  TEST_ASSERT_TRUE(DeviceSettings::defaults().pin_is_default());
+}
+
+void test_set_device_name_renames_and_broadcasts() {
+  RecordingSink other;
+  proc->add_sink(&other);
+  ClientToRadioMessage req = request(1);
+  req.which_body = kOpSetDeviceSettings;
+  req.body.set_device_settings.has_name = true;
+  set_str(req.body.set_device_settings.name,
+          sizeof(req.body.set_device_settings.name), "attic-pigeon");
+  send(req, sink);
+
+  // the hook re-advertised, the name persisted...
+  TEST_ASSERT_EQUAL(1, hooks->name_calls_);
+  TEST_ASSERT_EQUAL_STRING("attic-pigeon", hooks->name_);
+  TEST_ASSERT_EQUAL_STRING("attic-pigeon", proc->device_settings().name);
+  DeviceSettings loaded;
+  TEST_ASSERT_TRUE(sstore->load_device(&loaded));
+  TEST_ASSERT_EQUAL_STRING("attic-pigeon", loaded.name);
+  // ...the issuer got the full post-write read model...
+  TEST_ASSERT_EQUAL(meshpigeon_RadioToClient_device_settings_tag, sink->at(0).which());
+  TEST_ASSERT_EQUAL_STRING("attic-pigeon",
+                           sink->at(0).m().body.device_settings.name);
+  // ...and the other client got the async change push
+  TEST_ASSERT_EQUAL(1, other.count());
+  TEST_ASSERT_EQUAL(meshpigeon_RadioToClient_device_settings_tag, other.at(0).which());
+  TEST_ASSERT_EQUAL(0, other.at(0).id());
+  TEST_ASSERT_EQUAL_STRING("attic-pigeon",
+                           other.at(0).m().body.device_settings.name);
+
+  // an empty name resets to the derived default
+  other.clear();
+  req.id = 2;
+  set_str(req.body.set_device_settings.name,
+          sizeof(req.body.set_device_settings.name), "");
+  send(req, sink);
+  TEST_ASSERT_EQUAL(2, hooks->name_calls_);
+  TEST_ASSERT_EQUAL_STRING("MeshPigeon-A3F2", hooks->name_);
+  TEST_ASSERT_EQUAL_STRING("MeshPigeon-A3F2",
+                           sink->at(1).m().body.device_settings.name);
+  proc->remove_sink(&other);
+}
+
+void test_set_device_settings_wifi_applies_live() {
+  ClientToRadioMessage req = request(1);
+  req.which_body = kOpSetDeviceSettings;
+  SetDeviceSettingsMessage& m = req.body.set_device_settings;
+  m.has_wifi_enabled = true;
+  m.wifi_enabled = true;
+  m.has_wifi_ssid = true;
+  set_str(m.wifi_ssid, sizeof(m.wifi_ssid), "home-net");
+  m.has_wifi_password = true;
+  set_str(m.wifi_password, sizeof(m.wifi_password), "hunter2");
+  m.has_wifi_port = true;
+  m.wifi_port = 5100;
+  send(req, sink);
+
+  TEST_ASSERT_EQUAL(meshpigeon_RadioToClient_device_settings_tag, sink->at(0).which());
+  TEST_ASSERT_EQUAL(1, hooks->apply_wifi_calls_);
+  TEST_ASSERT_TRUE(hooks->wifi_.wifi_enabled);
+  TEST_ASSERT_EQUAL_STRING("home-net", hooks->wifi_.wifi_ssid);
+  const DeviceSettingsMessage& r = sink->at(0).m().body.device_settings;
+  TEST_ASSERT_TRUE(r.wifi_enabled);
+  TEST_ASSERT_EQUAL_STRING("home-net", r.wifi_ssid);
+  TEST_ASSERT_EQUAL(5100, r.wifi_port);
+}
+
+void test_set_device_settings_is_atomic() {
+  ClientToRadioMessage req = request(1);
+  req.which_body = kOpSetDeviceSettings;
+  SetDeviceSettingsMessage& m = req.body.set_device_settings;
+  m.has_name = true;
+  set_str(m.name, sizeof(m.name), "good-name");
+  m.has_pin = true;
+  set_str(m.pin, sizeof(m.pin), "12");  // too short
+  send(req, sink);
+
+  TEST_ASSERT_EQUAL(meshpigeon_Error_ErrorCode_ERROR_CODE_BAD_PAYLOAD,
+                    sink->at(0).error());
+  TEST_ASSERT_EQUAL(0, proc->device_settings().name[0]);  // nothing applied
+  TEST_ASSERT_TRUE(proc->device_settings().pin_is_default());
+  TEST_ASSERT_EQUAL(0, hooks->name_calls_);
+}
+
+void test_set_device_settings_capability_gate() {
+  hooks->wifi_supported_ = false;  // a board with no radio at all
+  ClientToRadioMessage req = request(1);
+  req.which_body = kOpSetDeviceSettings;
+  SetDeviceSettingsMessage& m = req.body.set_device_settings;
+  m.has_name = true;
+  set_str(m.name, sizeof(m.name), "shed-pigeon");
+  m.has_wifi_enabled = true;
+  send(req, sink);
+
+  TEST_ASSERT_EQUAL(meshpigeon_Error_ErrorCode_ERROR_CODE_NOT_SUPPORTED,
+                    sink->at(0).error());
+  TEST_ASSERT_EQUAL(0, proc->device_settings().name[0]);  // atomic: nothing
+  TEST_ASSERT_FALSE(proc->device_settings().wifi_enabled);
+  TEST_ASSERT_EQUAL(0, hooks->apply_wifi_calls_);
+}
+
+void test_auth_gate() {
+  lock_with_pin("1234");
+
+  // a second connection starts unauthenticated
+  RecordingSink client;
+  proc->add_sink(&client);
+
+  // gated: the radio settings, the device settings, and every write
+  struct {
+    pb_size_t op;
+    const char* what;
+  } gated[] = {
+      {kOpGetRadioSettings, "get_radio_settings"},
+      {kOpGetDeviceSettings, "get_device_settings"},
+      {kOpSetDeviceSettings, "set_device_settings"},
+      {kOpSetRadioSettings, "set_radio_settings"},
+      {kOpSendPacket, "send_packet"},
+      {kOpFetchPackets, "fetch_packets"},
+      {kOpPurgeStore, "purge_store"},
+      {kOpReboot, "reboot"},
+      {kOpFactoryReset, "factory_reset"},
+  };
+  for (size_t i = 0; i < sizeof(gated) / sizeof(gated[0]); i++) {
+    client.clear();
+    ClientToRadioMessage req = request(10 + (uint32_t)i);
+    req.which_body = gated[i].op;
+    send(req, &client);
+    TEST_ASSERT_EQUAL_MESSAGE(
+        meshpigeon_Error_ErrorCode_ERROR_CODE_AUTH_REQUIRED, client.at(0).error(),
+        gated[i].what);
+  }
+
+  // exempt: ping, device info, status, bootloader, and auth itself
+  client.clear();
+  ClientToRadioMessage ping = request(50);
+  ping.which_body = kOpPing;
+  send(ping, &client);
+  TEST_ASSERT_EQUAL(meshpigeon_RadioToClient_pong_tag, client.at(0).which());
+  client.clear();
+  ClientToRadioMessage info = request(51);
+  info.which_body = kOpGetDeviceInfo;
+  send(info, &client);
+  TEST_ASSERT_EQUAL(meshpigeon_RadioToClient_device_info_tag, client.at(0).which());
+  TEST_ASSERT_TRUE(client.at(0).m().body.device_info.auth_required);
+  client.clear();
+  ClientToRadioMessage status = request(52);
+  status.which_body = kOpGetStatus;
+  send(status, &client);
+  TEST_ASSERT_EQUAL(meshpigeon_RadioToClient_status_tag, client.at(0).which());
+  client.clear();
+  ClientToRadioMessage boot = request(53);
+  boot.which_body = kOpBootloader;
+  send(boot, &client);
+  TEST_ASSERT_EQUAL(meshpigeon_RadioToClient_ok_tag, client.at(0).which());
+
+  // wrong PIN: rejected
+  client.clear();
+  ClientToRadioMessage auth = request(54);
+  auth.which_body = kOpAuth;
+  set_str(auth.body.auth.pin, sizeof(auth.body.auth.pin), "9999");
+  send(auth, &client);
+  TEST_ASSERT_EQUAL(meshpigeon_Error_ErrorCode_ERROR_CODE_AUTH_REQUIRED,
+                    client.at(0).error());
+
+  // right PIN: unlocked, and the lock is gone from the info message
+  client.clear();
+  set_str(auth.body.auth.pin, sizeof(auth.body.auth.pin), "1234");
+  send(auth, &client);
+  TEST_ASSERT_EQUAL(meshpigeon_RadioToClient_ok_tag, client.at(0).which());
+  client.clear();
+  send(info, &client);
+  TEST_ASSERT_FALSE(client.at(0).m().body.device_info.auth_required);
+  // ...and the operations work now
+  client.clear();
+  ClientToRadioMessage get = request(55);
+  get.which_body = kOpGetDeviceSettings;
+  send(get, &client);
+  TEST_ASSERT_EQUAL(meshpigeon_RadioToClient_device_settings_tag, client.at(0).which());
+  proc->remove_sink(&client);
+}
+
+void test_auth_is_per_connection() {
+  lock_with_pin("1234");
+  RecordingSink a, b;
+  proc->add_sink(&a);
+  proc->add_sink(&b);
+  ClientToRadioMessage auth = request(1);
+  auth.which_body = kOpAuth;
+  set_str(auth.body.auth.pin, sizeof(auth.body.auth.pin), "1234");
+  send(auth, &a);
+  TEST_ASSERT_EQUAL(meshpigeon_RadioToClient_ok_tag, a.at(0).which());
+  b.clear();
+  ClientToRadioMessage get = request(2);
+  get.which_body = kOpGetDeviceSettings;
+  send(get, &b);
+  TEST_ASSERT_EQUAL(meshpigeon_Error_ErrorCode_ERROR_CODE_AUTH_REQUIRED,
+                    b.at(0).error());
+  proc->remove_sink(&a);
+  proc->remove_sink(&b);
+}
+
+void test_auth_rate_limit() {
+  lock_with_pin("1234");
+  RecordingSink client;
+  proc->add_sink(&client);
+
+  ClientToRadioMessage auth = request(1);
+  auth.which_body = kOpAuth;
+  set_str(auth.body.auth.pin, sizeof(auth.body.auth.pin), "0000");
+
+  // three failures are free
+  for (int i = 0; i < 3; i++) {
+    client.clear();
+    send(auth, &client);
+    TEST_ASSERT_EQUAL(meshpigeon_Error_ErrorCode_ERROR_CODE_AUTH_REQUIRED,
+                      client.at(0).error());
+  }
+  // the fourth opens a 1 s window: even the right PIN is not evaluated
+  client.clear();
+  send(auth, &client);
+  TEST_ASSERT_EQUAL(meshpigeon_Error_ErrorCode_ERROR_CODE_AUTH_REQUIRED,
+                    client.at(0).error());
+  set_str(auth.body.auth.pin, sizeof(auth.body.auth.pin), "1234");
+  client.clear();
+  send(auth, &client);
+  TEST_ASSERT_EQUAL(meshpigeon_Error_ErrorCode_ERROR_CODE_AUTH_REQUIRED,
+                    client.at(0).error());
+  // once the window passes, the right PIN works
+  tick(1001);
+  client.clear();
+  send(auth, &client);
+  TEST_ASSERT_EQUAL(meshpigeon_RadioToClient_ok_tag, client.at(0).which());
+  proc->remove_sink(&client);
+}
+
+void test_setting_a_new_pin_clears_the_lock_and_budget() {
+  lock_with_pin("1234");
+  // the holder authenticates first...
+  ClientToRadioMessage auth = request(1);
+  auth.which_body = kOpAuth;
+  set_str(auth.body.auth.pin, sizeof(auth.body.auth.pin), "1234");
+  send(auth, sink);
+  TEST_ASSERT_EQUAL(meshpigeon_RadioToClient_ok_tag, sink->at(0).which());
+  // ...while a stranger burns the brute-force budget
+  RecordingSink client;
+  proc->add_sink(&client);
+  set_str(auth.body.auth.pin, sizeof(auth.body.auth.pin), "0000");
+  for (int i = 0; i < 4; i++) send(auth, &client);  // opens a penalty window
+
+  // the holder authenticates, then rotates the PIN
+  sink->clear();
+  ClientToRadioMessage req = request(2);
+  req.which_body = kOpSetDeviceSettings;
+  req.body.set_device_settings.has_pin = true;
+  set_str(req.body.set_device_settings.pin, sizeof(req.body.set_device_settings.pin),
+          "5555");
+  send(req, sink);
+  TEST_ASSERT_EQUAL(meshpigeon_RadioToClient_device_settings_tag, sink->at(0).which());
+
+  // the new PIN is accepted immediately: no penalty carries over
+  client.clear();
+  set_str(auth.body.auth.pin, sizeof(auth.body.auth.pin), "5555");
+  send(auth, &client);
+  TEST_ASSERT_EQUAL(meshpigeon_RadioToClient_ok_tag, client.at(0).which());
+  proc->remove_sink(&client);
+}
+
+void test_factory_reset() {
+  const uint8_t pkt[] = {0x45};
+  proc->on_packet_received(-80, 10, pkt, 1);
+  ClientToRadioMessage set = request(1);
+  set.which_body = kOpSetDeviceSettings;
+  set.body.set_device_settings.has_name = true;
+  set_str(set.body.set_device_settings.name,
+          sizeof(set.body.set_device_settings.name), "shed-pigeon");
+  set.body.set_device_settings.has_pin = true;
+  set_str(set.body.set_device_settings.pin, sizeof(set.body.set_device_settings.pin),
+          "1234");
+  send(set, sink);
+  TEST_ASSERT_EQUAL(1, store->count());
+
+  // the PIN now locks the device: authenticate before the reset
+  sink->clear();
+  ClientToRadioMessage auth = request(2);
+  auth.which_body = kOpAuth;
+  set_str(auth.body.auth.pin, sizeof(auth.body.auth.pin), "1234");
+  send(auth, sink);
+  TEST_ASSERT_EQUAL(meshpigeon_RadioToClient_ok_tag, sink->at(0).which());
+
+  sink->clear();
+  ClientToRadioMessage req = request(3);
+  req.which_body = kOpFactoryReset;
+  send(req, sink);
+  TEST_ASSERT_EQUAL(meshpigeon_RadioToClient_ok_tag, sink->at(0).which());
+  TEST_ASSERT_EQUAL(1, hooks->factory_reset_calls_);
+  TEST_ASSERT_TRUE(proc->device_settings().pin_is_default());
+  TEST_ASSERT_EQUAL(0, proc->device_settings().name[0]);
+  TEST_ASSERT_EQUAL(0, store->count());
+  DeviceSettings loaded;
+  sstore->load_device(&loaded);
+  TEST_ASSERT_TRUE(loaded == DeviceSettings::defaults());
+}
+
+void test_reboot_and_bootloader() {
+  ClientToRadioMessage boot = request(1);
+  boot.which_body = kOpBootloader;
+  send(boot, sink);
+  TEST_ASSERT_EQUAL(meshpigeon_RadioToClient_ok_tag, sink->at(0).which());
+  TEST_ASSERT_EQUAL(1, hooks->bootloader_calls_);
+
+  sink->clear();
+  ClientToRadioMessage req = request(2);
+  req.which_body = kOpReboot;
+  send(req, sink);
+  TEST_ASSERT_EQUAL(meshpigeon_RadioToClient_ok_tag, sink->at(0).which());
+  TEST_ASSERT_EQUAL(1, hooks->reboot_calls_);
+}
+
+void test_status_reads_the_hooks() {
+  ClientToRadioMessage req = request(1);
+  req.which_body = kOpGetStatus;
+  send(req, sink);
+  TEST_ASSERT_EQUAL(meshpigeon_RadioToClient_status_tag, sink->at(0).which());
+  const StatusMessage& m = sink->at(0).m().body.status;
+  TEST_ASSERT_EQUAL(meshpigeon_Status_WifiState_WIFI_STATE_CONNECTED,
+                    m.wifi_state);
+  TEST_ASSERT_EQUAL_STRING("testnet", m.wifi_ssid);
+  TEST_ASSERT_EQUAL(4, m.wifi_ipv4.size);
+  TEST_ASSERT_EQUAL(192, m.wifi_ipv4.bytes[0]);
+  TEST_ASSERT_EQUAL(9, m.wifi_ipv4.bytes[3]);
+  TEST_ASSERT_EQUAL(5000, m.wifi_port);
+  TEST_ASSERT_EQUAL(-61, m.wifi_rssi);
+  TEST_ASSERT_EQUAL(3, m.ble_clients);
+}
+
+void test_status_pushed_on_wifi_transition() {
+  sink->clear();
+  proc->on_wifi_state_changed();
+  TEST_ASSERT_EQUAL(1, sink->count());
+  TEST_ASSERT_EQUAL(meshpigeon_RadioToClient_status_tag, sink->at(0).which());
+  TEST_ASSERT_EQUAL(0, sink->at(0).id());  // async push
+  TEST_ASSERT_EQUAL(3, sink->at(0).m().body.status.ble_clients);
+}
+
+void test_uptime_is_64_bit_across_the_millis_wrap() {
+  tick(0);                        // let the core see the starting time
+  raw_clock->set(0xFFFFF000u);    // jump forward to just before the wrap
+  tick(0);
+  const uint8_t pkt[] = {0x45};
+  proc->on_packet_received(-80, 10, pkt, 1);
+
+  ClientToRadioMessage req = request(1);
+  req.which_body = kOpGetDeviceInfo;
+  sink->clear();
+  send(req, sink);
+  uint64_t before = sink->at(0).m().body.device_info.uptime_ms;
+  TEST_ASSERT_EQUAL(0xFFFFF000ULL, before);
+
+  // cross the 32-bit rollover: 0x2000 ms later the source reads 0x1000
+  tick(0x2000);
+  sink->clear();
+  send(req, sink);
+  uint64_t after = sink->at(0).m().body.device_info.uptime_ms;
+  TEST_ASSERT_EQUAL(0x100001000ULL, after);  // one rollover, + 0x1000
+
+  // the stored packet kept the full 64-bit stamp
+  StoredPacket e;
+  TEST_ASSERT_TRUE(store->get(1, &e));
+  TEST_ASSERT_EQUAL(before, e.uptime_ms);
+  TEST_ASSERT_EQUAL(0xFFFFF000ULL, e.uptime_ms);
 }
 
 // ---- main -----------------------------------------------------------------------
@@ -695,22 +1377,43 @@ int main() {
   RUN_TEST(test_settings_serialize_roundtrip);
   RUN_TEST(test_settings_corrupt_crc_rejected);
   RUN_TEST(test_settings_bad_size_rejected);
+  RUN_TEST(test_device_settings_defaults_and_validation);
   RUN_TEST(test_ping_echoes);
-  RUN_TEST(test_unknown_command_errors);
+  RUN_TEST(test_ping_skips_unknown_fields);
+  RUN_TEST(test_unknown_operation_errors);
+  RUN_TEST(test_malformed_or_unidentified_envelope_dropped);
   RUN_TEST(test_boot_uses_persisted_settings);
   RUN_TEST(test_boot_first_time_uses_safe_default);
+  RUN_TEST(test_get_radio_settings);
   RUN_TEST(test_set_radio_persists_and_applies);
   RUN_TEST(test_set_radio_bad_payload);
+  RUN_TEST(test_set_radio_apply_failure_is_tx_failed);
   RUN_TEST(test_first_owner_lock_honors_only_first_set);
+  RUN_TEST(test_radio_changed_broadcast_to_others);
   RUN_TEST(test_send_packet_roundtrip);
   RUN_TEST(test_send_packet_tx_failure_reports_result);
   RUN_TEST(test_send_packet_busy_when_second_in_flight);
-  RUN_TEST(test_send_packet_bad_length_prefix);
+  RUN_TEST(test_send_packet_bad_length);
+  RUN_TEST(test_send_packet_max_raw_size_accepted);
   RUN_TEST(test_fetch_packets_streams_entries_and_end);
   RUN_TEST(test_fetch_packets_since_cursor_skips_old);
-  RUN_TEST(test_rx_packet_pushes_to_all_sinks_except_none);
-  RUN_TEST(test_radio_changed_broadcast_to_others);
+  RUN_TEST(test_rx_packet_pushes_to_all_sinks);
   RUN_TEST(test_purge_store);
-  RUN_TEST(test_get_info_shape);
+  RUN_TEST(test_device_info);
+  RUN_TEST(test_device_info_radio_failure);
+  RUN_TEST(test_device_settings_defaults);
+  RUN_TEST(test_set_device_name_renames_and_broadcasts);
+  RUN_TEST(test_set_device_settings_wifi_applies_live);
+  RUN_TEST(test_set_device_settings_is_atomic);
+  RUN_TEST(test_set_device_settings_capability_gate);
+  RUN_TEST(test_auth_gate);
+  RUN_TEST(test_auth_is_per_connection);
+  RUN_TEST(test_auth_rate_limit);
+  RUN_TEST(test_setting_a_new_pin_clears_the_lock_and_budget);
+  RUN_TEST(test_factory_reset);
+  RUN_TEST(test_reboot_and_bootloader);
+  RUN_TEST(test_status_reads_the_hooks);
+  RUN_TEST(test_status_pushed_on_wifi_transition);
+  RUN_TEST(test_uptime_is_64_bit_across_the_millis_wrap);
   return UNITY_END();
 }
