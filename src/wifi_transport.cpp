@@ -103,7 +103,18 @@ void WifiTransport::connect_start() {
   // matches, so this cannot cause push churn.
   set_state(State::CONNECTING);
   WiFi.mode(WIFI_STA);
-  WiFi.setSleep(false);  // the radio is the point; don't nap the link
+  // Do NOT turn modem sleep off here. Wi-Fi and BLE share one radio, and the
+  // coexistence layer aborts the chip outright ("Should enable WiFi modem
+  // sleep when both WiFi and Bluetooth are enabled") if esp_wifi_set_ps is
+  // called with WIFI_PS_NONE while the BT controller is up -- and NimBLE is
+  // started before this (main.cpp brings the BLE sink up first, because the
+  // derived name needs the BLE address). WIFI_PS_MIN_MODEM, the core default,
+  // is what the coexistence path requires; it costs a little idle current and
+  // buys not being dead. Turning sleep off had a second, quieter cost too: it
+  // was the one call that made enabling Wi-Fi fatal, and because it happened
+  // before the response was sent, the node died with the client's request
+  // un-answered and came back into the same Wi-Fi settings on every boot.
+  WiFi.setSleep(true);
   // The Arduino core's own auto-reconnect fires on a timer for reasons it
   // calls reconnectable (NO_AP_FOUND, ASSOC_FAIL, HANDSHAKE_TIMEOUT, ...),
   // which would reconnect immediately and make the ladder below irrelevant —
