@@ -101,7 +101,8 @@ message RadioToClient {
     DeviceInfo device_info = 3;
 
     // GET/SET_RADIO_SETTINGS response. The async "another client re-tuned"
-    // push is this same message with id = 0.
+    // push is this same message with id = 0, and reaches only authorized
+    // connections, because GetRadioSettings is auth-gated.
     RadioSettings radio_settings = 4;
 
     // SEND_PACKET response (async TxResult follows).

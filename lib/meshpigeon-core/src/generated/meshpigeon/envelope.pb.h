@@ -104,7 +104,8 @@ typedef struct _meshpigeon_RadioToClient {
         /* GET_DEVICE_INFO response. */
         meshpigeon_DeviceInfo device_info;
         /* GET/SET_RADIO_SETTINGS response. The async "another client re-tuned"
-     push is this same message with id = 0. */
+     push is this same message with id = 0, and reaches only authorized
+     connections, because GetRadioSettings is auth-gated. */
         meshpigeon_RadioSettings radio_settings;
         /* SEND_PACKET response (async TxResult follows). */
         meshpigeon_PacketAccepted packet_accepted;

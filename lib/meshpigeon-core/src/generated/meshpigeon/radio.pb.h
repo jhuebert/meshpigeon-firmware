@@ -49,11 +49,13 @@ typedef struct _meshpigeon_RadioSettings {
 } meshpigeon_RadioSettings;
 
 /* Applies new radio settings atomically: validated, persisted immediately,
- applied at once, and every OTHER connected client receives an async
- RadioSettings (this message, id = 0). During the first 5 minutes after
- boot only the FIRST accepted change is honored; later ones return
- ERROR_CODE_BUSY (the first-owner lock, docs/radio-protocol.md §6.1), as
- does a retune attempted while a transmission is still keying up. */
+ applied at once, and every OTHER *authorized* connected client receives an
+ async RadioSettings (this message, id = 0) — the re-tune push asks the
+ same is_authorized() question its request does, because the read model it
+ carries is auth-gated. During the first 5 minutes after boot only the
+ FIRST accepted change is honored; later ones return ERROR_CODE_BUSY (the
+ first-owner lock, docs/radio-protocol.md §6.1), as does a retune attempted
+ while a transmission is still keying up. */
 typedef struct _meshpigeon_SetRadioSettings {
     /* `optional` for the same reason every SetDeviceSettings field is: an
  absent submessage and an all-defaults one encode and decode identically
@@ -125,8 +127,11 @@ typedef struct _meshpigeon_FetchEnd {
 } meshpigeon_FetchEnd;
 
 /* Outcome of a SendPacket, pushed asynchronously (id = 0) when the radio
- finishes keying up. Not delivered for packets the radio refused
- immediately — those got an Error response instead. */
+ finishes keying up — including when it refused the send outright, in which
+ case the PacketAccepted still goes out first: the app holds that seq in its
+ outbox and has to be told the outcome either way. A packet the radio could
+ never accept (radio_ok false) is the one case with no PacketAccepted, and
+ so no TxResult: that one answers ERROR_CODE_NO_RADIO instead. */
 typedef struct _meshpigeon_TxResult {
     /* The store id returned in PacketAccepted. */
     uint32_t seq;

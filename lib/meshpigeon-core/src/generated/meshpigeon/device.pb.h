@@ -122,8 +122,9 @@ typedef struct _meshpigeon_DeviceInfo {
 } meshpigeon_DeviceInfo;
 
 /* Reads the device settings. Requires auth (the Wi-Fi password is in here).
- The PIN itself is write-only on the wire and is never returned; only
- pin_is_default is. */
+ The PIN itself is write-only on the wire: no read model carries it, so a
+ client can neither see the current PIN nor learn whether it is still the
+ shipped default — it remembers what it set. */
 typedef struct _meshpigeon_GetDeviceSettings {
     char dummy_field;
 } meshpigeon_GetDeviceSettings;

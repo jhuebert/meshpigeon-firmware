@@ -134,8 +134,9 @@ enum Capability {
 // ---------------------------------------------------------------------------
 
 // Reads the device settings. Requires auth (the Wi-Fi password is in here).
-// The PIN itself is write-only on the wire and is never returned; only
-// pin_is_default is.
+// The PIN itself is write-only on the wire: no read model carries it, so a
+// client can neither see the current PIN nor learn whether it is still the
+// shipped default — it remembers what it set.
 message GetDeviceSettings {}
 
 // The device settings, as stored (the read model). A response to
