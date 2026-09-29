@@ -32,6 +32,6 @@ suggestion.
 
 ## Reporting issues
 
-Include board, firmware version (`GET_INFO` payload), app version, and the
-command trace if you have one. For RF issues: region preset, SF/BW, and the
-distance/geometry.
+Include board, firmware version (`DeviceInfo.fw_version`), app version, and the
+envelope trace if you have one. The wire schema is `protobufs/meshpigeon/`. For
+RF issues: frequency, SF/BW, and the distance/geometry.

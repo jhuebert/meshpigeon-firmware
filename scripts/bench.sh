@@ -19,7 +19,7 @@ echo "== MeshPigeon bench $STAMP =="
 # 3. App-driven scenario through the simulator bridge:
 #    .pio/build/sim/program --port 8765 &
 #    scripts/scenario_ping.py tcp:127.0.0.1:8765   # PING round-trip
-#    scripts/scenario_history.py                   # FETCH_PACKETS replay equality
+#    scripts/scenario_history.py                   # FetchPackets replay equality
 # 4. Soak: 72h listening + store replay equality check (nightly job, not PR)
 
 cat > "$REPORT" <<JSON

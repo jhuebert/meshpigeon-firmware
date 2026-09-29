@@ -27,6 +27,8 @@ each is self-contained for its topic.
 | [09-testing.md](09-testing.md) | Test strategy for app and firmware, protocol conformance, hardware rig |
 | [10-roadmap-and-repo-setup.md](10-roadmap-and-repo-setup.md) | Milestones, repo scaffolding, CI, release model, per-repo guiding principles |
 | [11-meshcore-open-gap-analysis.md](11-meshcore-open-gap-analysis.md) | Study of the meshcore-open Flutter client: adopted / deferred / rejected decisions |
+| [13-device-settings-and-interface-v2.md](13-device-settings-and-interface-v2.md) | **Device settings, capabilities & status (Radio Protocol v2)** — *implemented, Sep 2026:* device name, Bluetooth-style PIN with protocol-level `Auth`, multi-client Wi-Fi station settings + status, capability gating, additive-only versioning policy, **RAM-only packet-store guarantee (§16)**. Plan 12 is retired and not a dependency |
+| [14-protobuf-interface-options.md](14-protobuf-interface-options.md) | **Protobuf device interface** — *implemented, Sep 2026:* protobuf envelopes over the unchanged COBS transports, nanopb on the device, in-repo `protobufs/` as the distributable spec; supersedes plan 13's TLV wire encoding, inherits all of its semantics |
 
 ## The one-paragraph summary
 

@@ -8,7 +8,7 @@ its radio settings across reboots. **No mesh protocol, no keys, no repeat
 logic** — all of that lives in the [MeshPigeon app](https://github.com/jhuebert/meshpigeon-android).
 
 ```
-┌──────────────┐   BLE / USB CDC / TCP (raw frames)
+┌──────────────┐   BLE / USB CDC / TCP (protobuf envelopes)
 │  MeshPigeon App │ ◄──────────────────────────────────┐
 │  (all proto) │                                    │
 └──────────────┘                                    ▼
@@ -23,12 +23,12 @@ logic** — all of that lives in the [MeshPigeon app](https://github.com/jhueber
                                         flood/direct routing)
 ```
 
-## Supported boards (v1)
+## Supported boards
 
 | Board | MCU | Radio | Transports |
 |---|---|---|---|
-| Seeed XIAO ESP32-S3 + Wio-SX1262 | ESP32-S3 | SX1262 | USB CDC + BLE |
-| Heltec WiFi LoRa 32 V3 | ESP32-S3 | SX1262 | USB CDC + BLE |
+| Seeed XIAO ESP32-S3 + Wio-SX1262 | ESP32-S3 | SX1262 | USB CDC + BLE + Wi-Fi TCP |
+| Heltec WiFi LoRa 32 V3 | ESP32-S3 | SX1262 | USB CDC + BLE + Wi-Fi TCP |
 | Seeed SenseCAP T114 | nRF52840 | SX1262 | USB CDC + BLE |
 | Seeed Tracker T1000-E | nRF52840 | LR1110 | USB CDC + BLE |
 
@@ -44,7 +44,8 @@ Run the host-side unit tests (no hardware needed — the entire board-neutral
 core is compiled and tested on the desktop):
 
 ```sh
-pio test -e native         # 30 tests: framing, store, settings, commands
+pio test -e native         # 56 tests: framing, store, settings, envelopes,
+                           # device settings, auth, status, uptime
 ```
 
 Run the **desktop radio simulator** — a TCP stand-in for a real board that
@@ -53,23 +54,37 @@ speaks the identical protocol, for app development and CI with zero hardware:
 ```sh
 pio run -e sim
 .pio/build/sim/program --port 8765 --traffic-ms 3000 --loss 10
+.pio/build/sim/program --port 8765 --fake-wifi   # scripted Wi-Fi status for app CI
 ```
 
 ## Layout
 
 ```
+protobufs/meshpigeon/  the .proto files — the wire spec (docs §0)
 lib/meshpigeon-core/   board-neutral core: framing (COBS+CRC16), packet store,
-                    settings persistence, uptime clock, command processor
+                    settings + device settings, uptime clock, command processor
+  src/generated/       committed nanopb output (regen-protos.sh; CI checks it)
+  src/nanopb/          vendored nanopb 0.4.9 runtime
 src/main.cpp        board main (wires radio + transports + core loop)
 src/radio_sx1262.h  RadioLib SX1262 port (raw bytes only)
 src/transports.h    USB CDC + BLE (Nordic UART Service) frame sinks
-sim/                desktop simulator (TCP bridge + scriptable RF loss/dup)
+src/wifi_transport.*  Wi-Fi station + multi-client TCP + mDNS (ESP32 envs)
+src/sim_main.cpp    desktop simulator (TCP bridge + scriptable RF loss/dup)
 test/               host-side unit tests (Unity, run with -e native)
 boards/             custom board definitions (seeed_t114, tracker-t1000-e)
                     + SoftDevice s140 v7 linker script
 docs/               radio-protocol.md — the versioned command contract
 docs/plans/         founding plan documents
 ```
+
+## The interface is protobuf
+
+Every frame carries a serialized `ClientToRadio` / `RadioToClient` envelope
+(COBS-framed, CRC-16 over the serialized bytes). The `.proto` files in
+`protobufs/meshpigeon/` are the contract; `docs/radio-protocol.md` documents the
+framing and the semantics, including the device-settings catalog, the PIN/auth
+model, naming, the Wi-Fi lifecycle and the additive-only evolution policy.
+See [docs/radio-protocol.md](docs/radio-protocol.md).
 
 ## What the firmware never does
 
@@ -83,9 +98,10 @@ docs/plans/         founding plan documents
 - [ ] Boots and listens on persisted settings with no app attached.
 - [ ] Survives a settings-persistence soak across reboots.
 - [ ] Stores ≥ target packet count; overflow drops oldest cleanly.
-- [ ] `FETCH_PACKETS` replay lets a fresh app reconstruct exact history.
+- [ ] `FetchPackets` replay lets a fresh app reconstruct exact history.
 - [ ] A connected app forwards packets; the radio alone never transmits
-      without a `SEND_PACKET`.
+      without a `SendPacket`.
+- [ ] A custom PIN gates the node, and `Auth` unlocks one connection only.
 - [ ] 3 concurrent BLE clients can fetch history simultaneously.
 - [ ] Coexists with MeshCore repeaters on-air.
 
